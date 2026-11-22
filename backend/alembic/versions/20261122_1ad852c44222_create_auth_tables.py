@@ -79,3 +79,4 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_revoked_access_tokens_expires_at'), table_name='revoked_access_tokens')
     op.drop_table('revoked_access_tokens')
     # ### end Alembic commands ###
+    sa.Enum(name='user_role').drop(op.get_bind(), checkfirst=True)
