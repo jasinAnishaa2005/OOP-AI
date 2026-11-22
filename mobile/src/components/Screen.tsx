@@ -24,5 +24,5 @@ export function Screen({ children }: PropsWithChildren) {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  scroll: { flexGrow: 1, justifyContent: 'center', padding: layout.screenMargin },
+  scroll: { flexGrow: 1, justifyContent: 'center', padding: layout.screenMargin, paddingVertical: layout.screenMargin + 8 },
 });

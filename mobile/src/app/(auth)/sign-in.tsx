@@ -2,10 +2,10 @@ import { Link } from 'expo-router';
 import { useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 
-import { AppText, BrandHeader, Button, Checkbox, FormMessage, Screen, TextField } from '@/components';
+import { AppText, BrandHeader, Button, Checkbox, FormMessage, OrDivider, Screen, Sparkle, TextField } from '@/components';
 import type { TextFieldHandle } from '@/components/TextField';
 import { useAuthStore } from '@/store/auth';
-import { colors, spacing } from '@/theme';
+import { colors, spacing, typography } from '@/theme';
 
 export default function SignInScreen() {
   const signIn = useAuthStore((s) => s.signIn);
@@ -13,6 +13,7 @@ export default function SignInScreen() {
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const passwordRef = useRef<TextFieldHandle>(null);
 
@@ -22,6 +23,7 @@ export default function SignInScreen() {
       return;
     }
     setError(null);
+    setInfo(null);
     setSubmitting(true);
     try {
       await signIn(identifier, password, rememberMe);
@@ -33,10 +35,12 @@ export default function SignInScreen() {
 
   return (
     <Screen>
-      <BrandHeader subtitle="Welcome back" />
+      <BrandHeader subtitle="Sign In to Continue" />
       <FormMessage message={error} />
+      <FormMessage message={info} tone="info" />
       <TextField
         label="Student ID or Email"
+        icon="user"
         value={identifier}
         onChangeText={setIdentifier}
         autoCapitalize="none"
@@ -48,6 +52,7 @@ export default function SignInScreen() {
       <TextField
         ref={passwordRef}
         label="Password"
+        icon="lock"
         password
         value={password}
         onChangeText={setPassword}
@@ -59,17 +64,30 @@ export default function SignInScreen() {
       <View style={styles.row}>
         <Checkbox label="Remember me" checked={rememberMe} onChange={setRememberMe} />
         <Link href="/forgot-password" asChild>
-          <Button variant="link" title="Forgot password?" />
+          <Button variant="link" title="Forgot Password?" />
         </Link>
       </View>
-      <Button title="Sign In" onPress={onSubmit} loading={submitting} />
+      <Button title="Sign In" icon="arrowRight" onPress={onSubmit} loading={submitting} />
+      <OrDivider />
+      <Button
+        variant="gingham"
+        title="Sign In with Google"
+        leading={<AppText style={styles.google}>G</AppText>}
+        onPress={() => {
+          setError(null);
+          setInfo('Google sign-in is not available yet. Please use your student ID or email.');
+        }}
+      />
       <View style={styles.footer}>
-        <AppText variant="caption" color={colors.textMuted}>
-          New to OOP-AI?
+        <AppText variant="body" color={colors.textPrimary}>
+          Don&apos;t have an account?
         </AppText>
         <Link href="/sign-up" asChild>
-          <Button variant="link" title="Create an account" />
+          <Button variant="link" title="Sign Up" />
         </Link>
+        <View style={styles.footerSpark}>
+          <Sparkle size={18} />
+        </View>
       </View>
     </Screen>
   );
@@ -83,5 +101,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.lg,
     flexWrap: 'wrap',
   },
-  footer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: spacing.lg },
+  footer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, marginTop: spacing.lg },
+  footerSpark: { marginTop: -spacing.lg },
+  google: { ...typography.h1, fontSize: 28, color: colors.textPrimary },
 });

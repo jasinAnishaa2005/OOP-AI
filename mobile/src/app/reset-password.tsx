@@ -37,20 +37,20 @@ export default function ResetPasswordScreen() {
 
   return (
     <Screen>
-      <BrandHeader subtitle="Reset password" />
+      <BrandHeader compact subtitle="Reset Password" />
       <FormMessage message={error} />
       <FormMessage message={done} tone="info" />
       {done ? (
-        <Button title="Go to sign in" onPress={() => router.replace('/sign-in')} />
+        <Button title="Go to Sign In" icon="arrowRight" onPress={() => router.replace('/sign-in')} />
       ) : (
         <>
-          <TextField label="Reset code" value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} />
-          <TextField label="New password" password value={password} onChangeText={setPassword} autoComplete="new-password" />
-          <TextField label="Confirm new password" password value={confirm} onChangeText={setConfirm} />
-          <Button title="Update password" onPress={onSubmit} loading={submitting} />
+          <TextField label="Reset code" icon="key" value={token} onChangeText={setToken} autoCapitalize="none" autoCorrect={false} />
+          <TextField label="New password" icon="lock" password value={password} onChangeText={setPassword} autoComplete="new-password" />
+          <TextField label="Confirm password" icon="lock" password value={confirm} onChangeText={setConfirm} />
+          <Button title="Update Password" icon="arrowRight" onPress={onSubmit} loading={submitting} />
           <View style={styles.links}>
             <Link href="/sign-in" asChild>
-              <Button variant="link" title="Back to sign in" />
+              <Button variant="link" title="Back to Sign In" />
             </Link>
           </View>
         </>

@@ -2,15 +2,20 @@ import { Platform } from 'react-native';
 
 /** Brand palette — "Coffee & Paper". Change values here to re-skin the whole app. */
 export const palette = {
-  deepCoffee: '#493326',
+  deepCoffee: '#4E2E20',
   espresso: '#604536',
-  mocha: '#806653',
-  lightMocha: '#B8A58F',
-  latte: '#C5B6A3',
-  warmGrey: '#A9A69F',
-  checkGrey: '#D1CEC6',
-  paperBeige: '#E9E4D9',
-  offWhite: '#F0ECE3',
+  mocha: '#86634D',
+  cocoa: '#AA8A76',
+  lightMocha: '#CEB5A3',
+  latte: '#D4BAA6',
+  sand: '#E9D8C5',
+  paperBeige: '#E9DACB',
+  linen: '#F2E1D0',
+  offWhite: '#F3E6D8',
+  cream: '#F7EEE4',
+  greyBrown: '#716357',
+  warmGrey: '#8F7F71',
+  warmGreyDeep: '#5E5347',
   rust: '#8C4A36',
 } as const;
 
@@ -18,21 +23,24 @@ export const colors = {
   background: palette.paperBeige,
   surface: palette.offWhite,
   surfaceMuted: palette.paperBeige,
-  border: palette.lightMocha,
-  borderStrong: palette.mocha,
-  stitch: palette.mocha,
+  border: palette.mocha,
+  borderStrong: palette.espresso,
+  stitch: palette.latte,
   textPrimary: palette.deepCoffee,
   textSecondary: palette.espresso,
-  textMuted: palette.mocha,
-  textOnDark: palette.offWhite,
+  textMuted: palette.greyBrown,
+  textOnDark: palette.cream,
   primaryButton: palette.warmGrey,
-  primaryButtonText: palette.deepCoffee,
-  secondaryButton: palette.paperBeige,
-  secondaryButtonText: palette.espresso,
+  primaryButtonEdge: palette.warmGreyDeep,
+  primaryButtonText: palette.cream,
+  secondaryButton: palette.sand,
+  secondaryButtonText: palette.deepCoffee,
   inputBackground: palette.paperBeige,
-  inputBorder: palette.latte,
-  inputBorderFocused: palette.mocha,
-  placeholder: palette.warmGrey,
+  inputBorder: palette.mocha,
+  inputBorderFocused: palette.deepCoffee,
+  placeholder: palette.greyBrown,
+  icon: palette.greyBrown,
+  pill: palette.sand,
   questionPanel: palette.deepCoffee,
   questionText: palette.offWhite,
   answerCard: palette.latte,
@@ -40,9 +48,9 @@ export const colors = {
   error: palette.rust,
   shadow: palette.deepCoffee,
   check: {
-    base: palette.offWhite,
+    base: palette.linen,
     stripe: palette.lightMocha,
-    stripeAlt: palette.checkGrey,
+    cross: palette.cocoa,
   },
 } as const;
 
@@ -78,14 +86,15 @@ export const fontFamilies = {
 } as const;
 
 export const typography = {
-  display: { fontFamily: fontFamilies.bold, fontSize: 34, lineHeight: 42, letterSpacing: 1 },
+  display: { fontFamily: fontFamilies.bold, fontSize: 44, lineHeight: 52 },
   h1: { fontFamily: fontFamilies.bold, fontSize: 26, lineHeight: 34 },
   h2: { fontFamily: fontFamilies.bold, fontSize: 20, lineHeight: 28 },
   body: { fontFamily: fontFamilies.regular, fontSize: 16, lineHeight: 24 },
   bodyBold: { fontFamily: fontFamilies.bold, fontSize: 16, lineHeight: 24 },
   label: { fontFamily: fontFamilies.bold, fontSize: 14, lineHeight: 20 },
   caption: { fontFamily: fontFamilies.regular, fontSize: 13, lineHeight: 18 },
-  tagline: { fontFamily: fontFamilies.bold, fontSize: 13, lineHeight: 18, letterSpacing: 3 },
+  tagline: { fontFamily: fontFamilies.bold, fontSize: 16, lineHeight: 22, letterSpacing: 1.5 },
+  button: { fontFamily: fontFamilies.bold, fontSize: 19, lineHeight: 26 },
   code: { fontFamily: fontFamilies.mono, fontSize: 14, lineHeight: 20 },
 } as const;
 
@@ -100,9 +109,9 @@ export const shadows = {
 } as const;
 
 export const layout = {
-  screenMargin: spacing.xl,
+  screenMargin: spacing.lg,
   containerPadding: spacing.xl,
-  maxContentWidth: 480,
-  touchTarget: 52,
-  checkCellSize: 28,
+  maxContentWidth: 460,
+  touchTarget: 54,
+  checkCellSize: 26,
 } as const;

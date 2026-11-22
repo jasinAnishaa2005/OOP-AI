@@ -31,7 +31,7 @@ export default function ForgotPasswordScreen() {
 
   return (
     <Screen>
-      <BrandHeader subtitle="Forgot password" />
+      <BrandHeader compact subtitle="Forgot Password" />
       <AppText variant="body" color={colors.textSecondary} align="center" style={styles.intro}>
         Enter your email and we will send you a link and a reset code.
       </AppText>
@@ -39,19 +39,20 @@ export default function ForgotPasswordScreen() {
       <FormMessage message={info} tone="info" />
       <TextField
         label="Email"
+        icon="mail"
         value={email}
         onChangeText={setEmail}
         autoCapitalize="none"
         keyboardType="email-address"
         autoComplete="email"
       />
-      <Button title="Send reset link" onPress={onSubmit} loading={submitting} />
+      <Button title="Send Reset Link" icon="arrowRight" onPress={onSubmit} loading={submitting} />
       <View style={styles.links}>
         <Link href="/reset-password" asChild>
           <Button variant="link" title="I have a reset code" />
         </Link>
         <Link href="/sign-in" asChild>
-          <Button variant="link" title="Back to sign in" />
+          <Button variant="link" title="Back to Sign In" />
         </Link>
       </View>
     </Screen>

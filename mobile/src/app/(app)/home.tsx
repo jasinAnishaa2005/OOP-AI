@@ -13,7 +13,7 @@ export default function HomeScreen() {
 
   return (
     <Screen>
-      <BrandHeader />
+      <BrandHeader compact />
       <AppText variant="h1" align="center">
         Hello, {user?.full_name.split(' ')[0]}
       </AppText>

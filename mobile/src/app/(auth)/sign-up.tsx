@@ -52,11 +52,12 @@ export default function SignUpScreen() {
 
   return (
     <Screen>
-      <BrandHeader subtitle="Create your account" />
+      <BrandHeader compact subtitle="Create Your Account" />
       <FormMessage message={formError} />
-      <TextField label="Full name" value={fullName} onChangeText={setFullName} autoComplete="name" error={errors.fullName} />
+      <TextField label="Full name" icon="user" value={fullName} onChangeText={setFullName} autoComplete="name" error={errors.fullName} />
       <TextField
         label="Email"
+        icon="mail"
         value={email}
         onChangeText={setEmail}
         autoCapitalize="none"
@@ -66,6 +67,7 @@ export default function SignUpScreen() {
       />
       <TextField
         label="Student ID (optional)"
+        icon="id"
         value={studentId}
         onChangeText={setStudentId}
         autoCapitalize="characters"
@@ -73,6 +75,7 @@ export default function SignUpScreen() {
       />
       <TextField
         label="Password"
+        icon="lock"
         password
         value={password}
         onChangeText={setPassword}
@@ -80,14 +83,14 @@ export default function SignUpScreen() {
         textContentType="newPassword"
         error={errors.password}
       />
-      <TextField label="Confirm password" password value={confirm} onChangeText={setConfirm} error={errors.confirm} />
-      <Button title="Sign Up" onPress={onSubmit} loading={submitting} />
+      <TextField label="Confirm password" icon="lock" password value={confirm} onChangeText={setConfirm} error={errors.confirm} />
+      <Button title="Sign Up" icon="arrowRight" onPress={onSubmit} loading={submitting} />
       <View style={styles.footer}>
-        <AppText variant="caption" color={colors.textMuted}>
+        <AppText variant="body" color={colors.textPrimary}>
           Already have an account?
         </AppText>
         <Link href="/sign-in" asChild>
-          <Button variant="link" title="Sign in" />
+          <Button variant="link" title="Sign In" />
         </Link>
       </View>
     </Screen>
@@ -95,5 +98,5 @@ export default function SignUpScreen() {
 }
 
 const styles = StyleSheet.create({
-  footer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', marginTop: spacing.lg },
+  footer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, marginTop: spacing.lg },
 });

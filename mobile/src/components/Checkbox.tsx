@@ -1,8 +1,9 @@
 import { Pressable, StyleSheet, View } from 'react-native';
 
-import { colors, radii, spacing } from '@/theme';
+import { colors, spacing } from '@/theme';
 
 import { AppText } from './AppText';
+import { Icon } from './Icon';
 
 type Props = { label: string; checked: boolean; onChange: (checked: boolean) => void };
 
@@ -15,13 +16,9 @@ export function Checkbox({ label, checked, onChange }: Props) {
       hitSlop={6}
       style={styles.row}>
       <View style={[styles.box, checked && styles.boxChecked]}>
-        {checked && (
-          <AppText variant="label" color={colors.textOnDark}>
-            ✓
-          </AppText>
-        )}
+        {checked && <Icon name="check" size={18} color={colors.textOnDark} strokeWidth={2.6} />}
       </View>
-      <AppText variant="caption" color={colors.textSecondary}>
+      <AppText variant="body" color={colors.textPrimary}>
         {label}
       </AppText>
     </Pressable>
@@ -31,9 +28,9 @@ export function Checkbox({ label, checked, onChange }: Props) {
 const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, minHeight: 40 },
   box: {
-    width: 22,
-    height: 22,
-    borderRadius: radii.sm / 2,
+    width: 24,
+    height: 24,
+    borderRadius: 6,
     borderWidth: 1.5,
     borderColor: colors.borderStrong,
     backgroundColor: colors.inputBackground,
