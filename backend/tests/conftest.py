@@ -2,6 +2,8 @@ import os
 
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-that-is-long-enough-for-hs256-signing")
+os.environ.setdefault("AI_PROVIDER", "fake")
+os.environ.setdefault("AI_RETRY_BACKOFF_SECONDS", "0")
 os.environ.setdefault("DATABASE_URL", os.environ.get("TEST_DATABASE_URL", "sqlite+pysqlite:///./test.db"))
 
 import pytest  # noqa: E402
