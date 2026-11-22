@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -57,7 +58,12 @@ def register_user(db: Session, data: RegisterRequest) -> User:
         password_hash=hash_password(data.password),
     )
     db.add(user)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # A concurrent registration won the race for the same email or student ID.
+        db.rollback()
+        raise AuthError("An account with this email or student ID already exists", status_code=409) from None
     db.refresh(user)
     return user
 
