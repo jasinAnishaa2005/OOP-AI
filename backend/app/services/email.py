@@ -1,5 +1,6 @@
 import logging
 import smtplib
+import ssl
 from email.message import EmailMessage
 from typing import Protocol
 
@@ -25,7 +26,7 @@ class SmtpEmailSender:
         message.set_content(body)
         with smtplib.SMTP(s.smtp_host, s.smtp_port, timeout=10) as smtp:
             if s.smtp_use_tls:
-                smtp.starttls()
+                smtp.starttls(context=ssl.create_default_context())
             if s.smtp_username and s.smtp_password:
                 smtp.login(s.smtp_username, s.smtp_password)
             smtp.send_message(message)
