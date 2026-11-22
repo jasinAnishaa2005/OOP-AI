@@ -23,7 +23,7 @@ export function FormMessage({ message, tone = 'error' }: Props) {
 const styles = StyleSheet.create({
   box: {
     borderWidth: 1.5,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     backgroundColor: colors.surfaceMuted,
     padding: spacing.md,
     marginBottom: spacing.lg,
