@@ -80,7 +80,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     minHeight: layout.touchTarget,
-    borderRadius: radii.md,
+    borderRadius: radii.lg,
     borderWidth: 1.5,
     borderColor: colors.inputBorder,
     backgroundColor: colors.inputBackground,
@@ -91,6 +91,8 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
+    // The rounded row border already shows focus; drop the browser's default outline.
+    outlineWidth: 0,
   },
   toggle: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   help: { marginTop: spacing.xs },
