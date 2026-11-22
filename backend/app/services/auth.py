@@ -1,3 +1,4 @@
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,8 @@ from app.schemas.auth import RegisterRequest
 from app.services.email import EmailSender
 
 # Verifying against a real hash keeps login timing similar for unknown accounts.
+logger = logging.getLogger(__name__)
+
 _DUMMY_HASH = hash_password("timing-equalizer-password-1")
 
 
@@ -173,6 +176,15 @@ def request_password_reset(db: Session, email: str, sender: EmailSender) -> None
     )
     db.commit()
     link = f"{settings.password_reset_url}?token={token}"
+    try:
+        _send_reset_email(sender, user, link, token)
+    except Exception:
+        # Same response as for unknown emails, so delivery failures do not reveal registered accounts.
+        logger.exception("Failed to send password reset email")
+
+
+def _send_reset_email(sender: EmailSender, user: User, link: str, token: str) -> None:
+    settings = get_settings()
     sender.send(
         to=user.email,
         subject="Reset your OOP-AI password",

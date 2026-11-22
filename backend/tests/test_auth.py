@@ -135,6 +135,22 @@ def test_forgot_password_does_not_reveal_accounts(client, registered, outbox):
     assert len(outbox.messages) == 1 and outbox.messages[0]["to"] == "ada@example.com"
 
 
+def test_forgot_password_hides_email_failures(client, registered):
+    from app.main import app
+    from app.services.email import get_email_sender
+
+    class FailingSender:
+        def send(self, to: str, subject: str, body: str) -> None:
+            raise OSError("smtp down")
+
+    app.dependency_overrides[get_email_sender] = FailingSender
+    try:
+        res = client.post("/api/auth/forgot-password", json={"email": VALID_USER["email"]})
+    finally:
+        app.dependency_overrides.pop(get_email_sender, None)
+    assert res.status_code == 202
+
+
 def test_reset_password_flow(client, registered, outbox):
     client.post("/api/auth/forgot-password", json={"email": "ada@example.com"})
     token = _reset_token_from(outbox)
