@@ -27,7 +27,7 @@ export const authApi = {
     request<TokenResponse>('/auth/login', { method: 'POST', body }),
   refresh: (refresh_token: string) =>
     request<TokenResponse>('/auth/refresh', { method: 'POST', body: { refresh_token } }),
-  logout: (token: string, refresh_token: string | null) =>
+  logout: (token: string | null, refresh_token: string | null) =>
     request<Message>('/auth/logout', { method: 'POST', body: { refresh_token }, token }),
   me: (token: string) => request<User>('/auth/me', { token }),
   forgotPassword: (email: string) => request<Message>('/auth/forgot-password', { method: 'POST', body: { email } }),

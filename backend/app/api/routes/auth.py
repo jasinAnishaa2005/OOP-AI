@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.core.deps import AuthContext, get_auth_context, get_current_user
+from app.core.deps import AuthContext, get_current_user, get_optional_auth_context
 from app.core.rate_limit import limiter
 from app.db import get_db
 from app.models import User
@@ -70,10 +70,16 @@ def refresh(request: Request, body: RefreshRequest, db: Session = Depends(get_db
 @router.post("/logout", response_model=MessageResponse)
 def logout(
     body: LogoutRequest | None = None,
-    ctx: AuthContext = Depends(get_auth_context),
+    ctx: AuthContext | None = Depends(get_optional_auth_context),
     db: Session = Depends(get_db),
 ) -> MessageResponse:
-    auth_service.logout(db, ctx.user, ctx.token_payload, body.refresh_token if body else None)
+    # The refresh token alone is enough, so signing out still works after the access token expired.
+    refresh_token = body.refresh_token if body else None
+    if ctx is None and not refresh_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated", headers={"WWW-Authenticate": "Bearer"}
+        )
+    auth_service.logout(db, ctx.token_payload if ctx else None, refresh_token)
     return MessageResponse(message="Signed out")
 
 

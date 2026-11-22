@@ -111,6 +111,12 @@ def test_logout_revokes_access_and_refresh(client, registered):
     assert client.post("/api/auth/refresh", json={"refresh_token": registered["refresh_token"]}).status_code == 401
 
 
+def test_logout_with_only_refresh_token_revokes_it(client, registered):
+    res = client.post("/api/auth/logout", json={"refresh_token": registered["refresh_token"]})
+    assert res.status_code == 200
+    assert client.post("/api/auth/refresh", json={"refresh_token": registered["refresh_token"]}).status_code == 401
+
+
 def test_logout_requires_auth(client):
     assert client.post("/api/auth/logout").status_code == 401
 

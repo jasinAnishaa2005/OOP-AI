@@ -45,6 +45,18 @@ def get_auth_context(
     return AuthContext(user=user, token_payload=payload)
 
 
+def get_optional_auth_context(
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    db: Session = Depends(get_db),
+) -> AuthContext | None:
+    if credentials is None:
+        return None
+    try:
+        return get_auth_context(credentials, db)
+    except HTTPException:
+        return None
+
+
 def get_current_user(ctx: AuthContext = Depends(get_auth_context)) -> User:
     return ctx.user
 

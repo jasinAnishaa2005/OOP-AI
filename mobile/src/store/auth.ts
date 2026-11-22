@@ -75,7 +75,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
 
     signOut: async () => {
       const { accessToken, refreshToken } = get();
-      if (accessToken) await authApi.logout(accessToken, refreshToken).catch(() => undefined);
+      if (accessToken || refreshToken) await authApi.logout(accessToken, refreshToken).catch(() => undefined);
       await clear();
     },
 

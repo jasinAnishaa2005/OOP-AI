@@ -133,18 +133,18 @@ def rotate_refresh_token(db: Session, refresh_token: str) -> IssuedTokens:
     )
 
 
-def logout(db: Session, user: User, access_payload: dict, refresh_token: str | None) -> None:
-    db.merge(
-        RevokedAccessToken(
-            jti=access_payload["jti"],
-            expires_at=datetime.fromtimestamp(access_payload["exp"], tz=timezone.utc),
+def logout(db: Session, access_payload: dict | None, refresh_token: str | None) -> None:
+    if access_payload:
+        db.merge(
+            RevokedAccessToken(
+                jti=access_payload["jti"],
+                expires_at=datetime.fromtimestamp(access_payload["exp"], tz=timezone.utc),
+            )
         )
-    )
     if refresh_token:
         db.execute(
             update(RefreshToken)
             .where(
-                RefreshToken.user_id == user.id,
                 RefreshToken.token_hash == hash_opaque_token(refresh_token),
                 RefreshToken.revoked_at.is_(None),
             )
