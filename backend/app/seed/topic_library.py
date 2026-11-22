@@ -310,10 +310,12 @@ class SeedCounts:
 def seed_topic_library(db: Session, library: Library = TOPIC_LIBRARY) -> SeedCounts:
     """Insert any missing categories, chapters, topics and prerequisites.
 
-    Idempotent: existing rows (matched by slug) are left untouched so administrator edits survive.
+    Idempotent: existing rows (matched by slug) and their prerequisites are left untouched so
+    administrator edits survive.
     """
     counts = SeedCounts()
     topics_by_name: dict[str, Topic] = {}
+    created: set = set()
 
     for c_index, (category_name, groups) in enumerate(library):
         category = db.scalar(select(TopicCategory).where(TopicCategory.slug == slugify(category_name)))
@@ -342,12 +344,14 @@ def seed_topic_library(db: Session, library: Library = TOPIC_LIBRARY) -> SeedCou
                     db.add(topic)
                     db.flush()
                     counts.topics_created += 1
+                    created.add(topic.id)
                 topics_by_name[topic_name] = topic
 
     existing = set(db.execute(select(topic_prerequisites.c.topic_id, topic_prerequisites.c.prerequisite_id)))
     for topic_name, prerequisite_name in PREREQUISITES:
         topic, prerequisite = topics_by_name.get(topic_name), topics_by_name.get(prerequisite_name)
-        if topic is None or prerequisite is None or (topic.id, prerequisite.id) in existing:
+        # Only new topics get seeded prerequisites, so links an administrator removed stay removed.
+        if topic is None or prerequisite is None or topic.id not in created or (topic.id, prerequisite.id) in existing:
             continue
         db.execute(topic_prerequisites.insert().values(topic_id=topic.id, prerequisite_id=prerequisite.id))
         existing.add((topic.id, prerequisite.id))

@@ -261,3 +261,18 @@ def test_admin_seed_endpoint_is_idempotent(client, admin):
     first = client.post("/api/admin/topics/seed", headers=admin).json()
     assert first["topics_created"] == 179
     assert client.post("/api/admin/topics/seed", headers=admin).json()["topics_created"] == 0
+
+
+def test_reseed_keeps_removed_prerequisites_removed(client, seeded, admin):
+    tree = client.get("/api/admin/topics/tree", headers=admin).json()
+    overriding = _find(tree, "Method Overriding")
+    client.put(f"/api/admin/topics/{overriding['id']}/prerequisites", json={"prerequisite_ids": []}, headers=admin)
+    assert client.post("/api/admin/topics/seed", headers=admin).json()["prerequisites_created"] == 0
+    assert client.get(f"/api/admin/topics/{overriding['id']}", headers=admin).json()["prerequisites"] == []
+
+
+def test_create_requires_slug_when_name_has_no_ascii(client, seeded, admin):
+    res = client.post("/api/admin/topics/categories", json={"name": "多态"}, headers=admin)
+    assert res.status_code == 422 and "slug" in res.json()["detail"]
+    ok = client.post("/api/admin/topics/categories", json={"name": "多态", "slug": "polymorphism-zh"}, headers=admin)
+    assert ok.status_code == 201
