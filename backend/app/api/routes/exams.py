@@ -59,7 +59,9 @@ def get_exam(exam_id: uuid.UUID, db: Session = Depends(get_db), user: User = Dep
 
 
 @router.post("/{exam_id}/retry", response_model=s.ExamOut, status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit(lambda: get_settings().exam_create_rate_limit)
 def retry(
+    request: Request,
     exam_id: uuid.UUID,
     background: BackgroundTasks,
     db: Session = Depends(get_db),

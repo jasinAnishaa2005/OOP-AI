@@ -126,3 +126,14 @@ class ExamGenerationAttempt(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     exam: Mapped[Exam] = relationship(back_populates="attempts")
+
+
+class ExamGenerationRequest(Base):
+    """Usage ledger: one row per exam creation or retry. Kept when the exam is deleted so quotas hold."""
+
+    __tablename__ = "exam_generation_requests"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    exam_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("exams.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

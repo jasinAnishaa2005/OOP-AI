@@ -2,13 +2,13 @@ import uuid
 from datetime import timedelta
 
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.config import get_settings
 from app.core.time import as_utc, utcnow
-from app.models import Exam, ExamQuestion, ExamTemplate, ExamTopic, Topic, TopicGroup, User
+from app.models import Exam, ExamGenerationRequest, ExamQuestion, ExamTemplate, ExamTopic, Topic, TopicGroup, User
 from app.schemas import exams as s
 from app.schemas.topics import TopicPath, TopicRef, slugify
 from app.services import topics as topic_service
@@ -123,12 +123,21 @@ def update_template(db: Session, template_id: uuid.UUID, data: s.TemplateUpdate)
 # ---------- Exams ----------
 
 
-def create_exam(db: Session, user: User, data: s.ExamCreate) -> Exam:
-    settings = get_settings()
+def _check_daily_quota(db: Session, user: User) -> None:
+    """Creations and retries both count; the ledger survives exam deletion."""
+    limit = get_settings().exam_daily_limit
     since = utcnow() - timedelta(days=1)
-    recent = db.scalar(select(func.count()).select_from(Exam).where(Exam.user_id == user.id, Exam.created_at >= since))
-    if recent >= settings.exam_daily_limit:
-        raise ExamError(f"Daily limit of {settings.exam_daily_limit} generated exams reached", 429)
+    used = db.scalar(
+        select(func.count())
+        .select_from(ExamGenerationRequest)
+        .where(ExamGenerationRequest.user_id == user.id, ExamGenerationRequest.created_at >= since)
+    )
+    if used >= limit:
+        raise ExamError(f"Daily limit of {limit} exam generations reached", 429)
+
+
+def create_exam(db: Session, user: User, data: s.ExamCreate) -> Exam:
+    _check_daily_quota(db, user)
 
     template = None
     if data.template_id is not None:
@@ -170,6 +179,8 @@ def create_exam(db: Session, user: User, data: s.ExamCreate) -> Exam:
         topic_links=[ExamTopic(topic_id=tid, position=i) for i, tid in enumerate(selection.topic_ids)],
     )
     db.add(exam)
+    db.flush()
+    db.add(ExamGenerationRequest(user_id=user.id, exam_id=exam.id))
     db.commit()
     return exam
 
@@ -224,11 +235,29 @@ def list_exams(
 
 def retry_exam(db: Session, user: User, exam_id: uuid.UUID) -> Exam:
     exam = get_exam(db, user, exam_id)
-    stuck = exam.status in ("pending", "generating") and as_utc(exam.updated_at) < utcnow() - STALE_GENERATION
+    stale_before = utcnow() - STALE_GENERATION
+    stuck = exam.status in ("pending", "generating") and as_utc(exam.updated_at) < stale_before
     if exam.status != "failed" and not stuck:
         raise ExamError("Only failed exams can be regenerated", 409)
-    exam.questions.clear()
-    exam.status, exam.failure_reason = "pending", None
+    _check_daily_quota(db, user)
+    # Compare-and-set so overlapping retries cannot both reset the exam.
+    claimed = db.execute(
+        update(Exam)
+        .where(
+            Exam.id == exam.id,
+            or_(
+                Exam.status == "failed",
+                and_(Exam.status.in_(("pending", "generating")), Exam.updated_at < stale_before),
+            ),
+        )
+        .values(status="pending", failure_reason=None, updated_at=utcnow())
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if not claimed:
+        db.rollback()
+        raise ExamError("This exam is already being regenerated", 409)
+    db.execute(delete(ExamQuestion).where(ExamQuestion.exam_id == exam.id))
+    db.add(ExamGenerationRequest(user_id=user.id, exam_id=exam.id))
     db.commit()
     return exam
 

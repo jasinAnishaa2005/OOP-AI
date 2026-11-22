@@ -77,6 +77,17 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_exam_generation_attempts_exam_id'), 'exam_generation_attempts', ['exam_id'], unique=False)
+    op.create_table('exam_generation_requests',
+    sa.Column('id', sa.Uuid(), nullable=False),
+    sa.Column('user_id', sa.Uuid(), nullable=False),
+    sa.Column('exam_id', sa.Uuid(), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.ForeignKeyConstraint(['exam_id'], ['exams.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_exam_generation_requests_created_at'), 'exam_generation_requests', ['created_at'], unique=False)
+    op.create_index(op.f('ix_exam_generation_requests_user_id'), 'exam_generation_requests', ['user_id'], unique=False)
     op.create_table('exam_questions',
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('exam_id', sa.Uuid(), nullable=False),
@@ -120,6 +131,9 @@ def downgrade() -> None:
     op.drop_index(op.f('ix_exam_questions_topic_id'), table_name='exam_questions')
     op.drop_index(op.f('ix_exam_questions_exam_id'), table_name='exam_questions')
     op.drop_table('exam_questions')
+    op.drop_index(op.f('ix_exam_generation_requests_user_id'), table_name='exam_generation_requests')
+    op.drop_index(op.f('ix_exam_generation_requests_created_at'), table_name='exam_generation_requests')
+    op.drop_table('exam_generation_requests')
     op.drop_index(op.f('ix_exam_generation_attempts_exam_id'), table_name='exam_generation_attempts')
     op.drop_table('exam_generation_attempts')
     op.drop_index(op.f('ix_exams_user_id'), table_name='exams')

@@ -12,7 +12,7 @@ from app.main import app
 from app.models import Exam, ExamQuestionKey, ExamTemplate, Topic, TopicCategory, TopicGroup, User, UserRole
 from app.seed.exam_templates import EXAM_TEMPLATES, seed_exam_templates
 from app.seed.topic_library import seed_topic_library
-from app.services.exam_generation import _split, build_request
+from app.services.exam_generation import _fail, _split, build_request, run_generation
 
 KEY_FIELDS = ("answer", "marking_guide", "explanation", "correct_option", "reference_solution", "model_answer")
 
@@ -507,3 +507,38 @@ def test_build_request_has_no_secret_and_schema_is_self_contained(seeded, monkey
     req = build_request("code_writing", [slot])
     assert "$ref" not in json.dumps(req.response_schema)
     assert "reference_solution" in req.response_schema["properties"]["questions"]["items"]["properties"]
+
+
+def test_deleting_exams_does_not_reset_daily_quota(client, seeded, student, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "exam_daily_limit", 1)
+    body = custom({"topic_ids": topic_ids("Coupling")}, [sec("mcq", 2, 1)])
+    exam_id = client.post("/api/exams", json=body, headers=student).json()["id"]
+    assert client.delete(f"/api/exams/{exam_id}", headers=student).status_code == 204
+    assert client.post("/api/exams", json=body, headers=student).status_code == 429
+
+
+def test_retries_count_towards_daily_quota(client, seeded, student, provider, monkeypatch):
+    from app.config import get_settings
+
+    provider(ScriptedGenerator(GenerationError("down", retryable=False)))
+    exam_id = client.post(
+        "/api/exams", json=custom({"topic_ids": topic_ids("Coupling")}, [sec("mcq", 2, 1)]), headers=student
+    ).json()["id"]
+    monkeypatch.setattr(get_settings(), "exam_daily_limit", 1)
+    res = client.post(f"/api/exams/{exam_id}/retry", headers=student)
+    assert res.status_code == 429
+
+
+def test_generation_runs_once_and_late_failure_keeps_ready_exam(client, seeded, student, provider):
+    gen = provider(ScriptedGenerator())
+    exam_id = client.post(
+        "/api/exams", json=custom({"topic_ids": topic_ids("Coupling")}, [sec("mcq", 2, 1)]), headers=student
+    ).json()["id"]
+    calls = len(gen.requests)
+    run_generation(uuid.UUID(exam_id), gen)  # a second worker for the same exam does nothing
+    assert len(gen.requests) == calls
+    _fail(uuid.UUID(exam_id), "late failure")
+    exam = client.get(f"/api/exams/{exam_id}", headers=student).json()
+    assert exam["status"] == "ready" and len(exam["questions"]) == 2

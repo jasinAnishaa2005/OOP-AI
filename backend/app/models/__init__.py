@@ -1,6 +1,7 @@
 from app.models.exam import (
     Exam,
     ExamGenerationAttempt,
+    ExamGenerationRequest,
     ExamQuestion,
     ExamQuestionKey,
     ExamTemplate,
@@ -12,6 +13,7 @@ from app.models.user import PasswordResetToken, RefreshToken, RevokedAccessToken
 __all__ = [
     "Exam",
     "ExamGenerationAttempt",
+    "ExamGenerationRequest",
     "ExamQuestion",
     "ExamQuestionKey",
     "ExamTemplate",

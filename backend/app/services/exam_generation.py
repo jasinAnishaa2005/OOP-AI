@@ -10,6 +10,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from pydantic import ValidationError
+from sqlalchemy import update
 from sqlalchemy.orm import Session, selectinload
 
 from app.ai.base import ExamGenerator, GenerationError, GenerationRequest, PlannedSlot
@@ -326,12 +327,34 @@ def _generate_batch(
     raise GenerationFailed(reason)
 
 
+def _claim(db: Session, exam_id: uuid.UUID, generator: ExamGenerator) -> bool:
+    """Atomically move pending -> generating so only one worker generates an exam."""
+    claimed = db.execute(
+        update(Exam)
+        .where(Exam.id == exam_id, Exam.status == "pending")
+        .values(
+            status="generating",
+            failure_reason=None,
+            provider=generator.provider,
+            model=generator.model,
+            prompt_version=PROMPT_VERSION,
+            updated_at=utcnow(),
+        )
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    db.commit()
+    return bool(claimed)
+
+
 def _fail(exam_id: uuid.UUID, reason: str) -> None:
+    """Mark a generating exam failed; never touches an exam another run already finished."""
     with SessionLocal() as db:
-        exam = db.get(Exam, exam_id)
-        if exam is not None:
-            exam.status, exam.failure_reason = "failed", reason
-            db.commit()
+        db.execute(
+            update(Exam)
+            .where(Exam.id == exam_id, Exam.status == "generating")
+            .values(status="failed", failure_reason=reason, updated_at=utcnow())
+        )
+        db.commit()
 
 
 def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable[[float], None] = time.sleep) -> None:
@@ -348,11 +371,9 @@ def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable
                     .selectinload(TopicGroup.category)
                 ],
             )
-            if exam is None or exam.status != "pending":
+            if exam is None or not _claim(db, exam_id, generator):
                 return
-            exam.status, exam.failure_reason = "generating", None
-            exam.provider, exam.model, exam.prompt_version = generator.provider, generator.model, PROMPT_VERSION
-            db.commit()
+            db.refresh(exam)
 
             slots = plan_slots(exam, [link.topic for link in exam.topic_links])
             drafts: list[Draft] = []
