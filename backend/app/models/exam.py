@@ -46,6 +46,7 @@ class Exam(_Timestamps, Base):
     provider: Mapped[str | None] = mapped_column(String(40))
     model: Mapped[str | None] = mapped_column(String(80))
     prompt_version: Mapped[str | None] = mapped_column(String(20))
+    generation_id: Mapped[uuid.UUID | None] = mapped_column()
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     template: Mapped[ExamTemplate | None] = relationship()

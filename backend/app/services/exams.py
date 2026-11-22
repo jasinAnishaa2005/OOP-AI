@@ -126,6 +126,8 @@ def update_template(db: Session, template_id: uuid.UUID, data: s.TemplateUpdate)
 def _check_daily_quota(db: Session, user: User) -> None:
     """Creations and retries both count; the ledger survives exam deletion."""
     limit = get_settings().exam_daily_limit
+    # Lock the user row so concurrent requests cannot all pass the check (no-op on SQLite, which serialises writes).
+    db.execute(select(User.id).where(User.id == user.id).with_for_update())
     since = utcnow() - timedelta(days=1)
     used = db.scalar(
         select(func.count())
@@ -250,7 +252,7 @@ def retry_exam(db: Session, user: User, exam_id: uuid.UUID) -> Exam:
                 and_(Exam.status.in_(("pending", "generating")), Exam.updated_at < stale_before),
             ),
         )
-        .values(status="pending", failure_reason=None, updated_at=utcnow())
+        .values(status="pending", failure_reason=None, generation_id=None, updated_at=utcnow())
         .execution_options(synchronize_session=False)
     ).rowcount
     if not claimed:

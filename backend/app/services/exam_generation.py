@@ -275,7 +275,35 @@ _INVALID = "The AI could not produce valid questions for this exam. Please retry
 _UNEXPECTED = "Exam generation failed unexpectedly. Please retry."
 
 
-def _record(db: Session, exam: Exam, question_type: str, n: int, outcome: str, started: float, error=None, resp=None):
+class Superseded(Exception):
+    """The exam was deleted or handed to a newer generation run; stop without touching it."""
+
+
+def _heartbeat(db: Session, exam: Exam, run_id: uuid.UUID) -> None:
+    """Prove this run still owns the exam and keep it from looking stale to retry."""
+    owned = db.execute(
+        update(Exam)
+        .where(Exam.id == exam.id, Exam.generation_id == run_id, Exam.status == "generating")
+        .values(updated_at=utcnow())
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    if not owned:
+        db.rollback()
+        raise Superseded
+
+
+def _record(
+    db: Session,
+    exam: Exam,
+    run_id: uuid.UUID,
+    question_type: str,
+    n: int,
+    outcome: str,
+    started: float,
+    error=None,
+    resp=None,
+):
+    _heartbeat(db, exam, run_id)
     db.add(
         ExamGenerationAttempt(
             exam_id=exam.id,
@@ -294,6 +322,7 @@ def _record(db: Session, exam: Exam, question_type: str, n: int, outcome: str, s
 def _generate_batch(
     db: Session,
     exam: Exam,
+    run_id: uuid.UUID,
     generator: ExamGenerator,
     slots: list[PlannedSlot],
     seen_stems: set[str],
@@ -308,7 +337,7 @@ def _generate_batch(
         try:
             resp = generator.generate(build_request(question_type, slots, feedback))
         except GenerationError as exc:
-            _record(db, exam, question_type, n, exc.kind, started, str(exc))
+            _record(db, exam, run_id, question_type, n, exc.kind, started, str(exc))
             logger.warning("Exam %s: %s attempt %d failed: %s", exam.id, question_type, n, exc)
             if not exc.retryable:
                 raise GenerationFailed(_UNAVAILABLE) from exc
@@ -319,21 +348,23 @@ def _generate_batch(
         try:
             drafts = parse_and_validate(resp.text, slots, seen_stems)
         except InvalidOutput as exc:
-            _record(db, exam, question_type, n, "invalid_output", started, "; ".join(exc.errors), resp)
+            _record(db, exam, run_id, question_type, n, "invalid_output", started, "; ".join(exc.errors), resp)
             feedback, reason = exc.errors, _INVALID
             continue
-        _record(db, exam, question_type, n, "success", started, resp=resp)
+        _record(db, exam, run_id, question_type, n, "success", started, resp=resp)
         return drafts
     raise GenerationFailed(reason)
 
 
-def _claim(db: Session, exam_id: uuid.UUID, generator: ExamGenerator) -> bool:
-    """Atomically move pending -> generating so only one worker generates an exam."""
+def _claim(db: Session, exam_id: uuid.UUID, generator: ExamGenerator) -> uuid.UUID | None:
+    """Atomically move pending -> generating so only one worker generates an exam; returns the run id."""
+    run_id = uuid.uuid4()
     claimed = db.execute(
         update(Exam)
         .where(Exam.id == exam_id, Exam.status == "pending")
         .values(
             status="generating",
+            generation_id=run_id,
             failure_reason=None,
             provider=generator.provider,
             model=generator.model,
@@ -343,22 +374,22 @@ def _claim(db: Session, exam_id: uuid.UUID, generator: ExamGenerator) -> bool:
         .execution_options(synchronize_session=False)
     ).rowcount
     db.commit()
-    return bool(claimed)
+    return run_id if claimed else None
 
 
-def _fail(exam_id: uuid.UUID, reason: str) -> None:
-    """Mark a generating exam failed; never touches an exam another run already finished."""
+def _fail(exam_id: uuid.UUID, reason: str, run_id: uuid.UUID | None = None) -> None:
+    """Mark a generating exam failed; never touches an exam another run finished or took over."""
+    where = [Exam.id == exam_id, Exam.status == "generating"]
+    if run_id is not None:
+        where.append(Exam.generation_id == run_id)
     with SessionLocal() as db:
-        db.execute(
-            update(Exam)
-            .where(Exam.id == exam_id, Exam.status == "generating")
-            .values(status="failed", failure_reason=reason, updated_at=utcnow())
-        )
+        db.execute(update(Exam).where(*where).values(status="failed", failure_reason=reason, updated_at=utcnow()))
         db.commit()
 
 
 def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable[[float], None] = time.sleep) -> None:
     """Background task: generate, validate and store all questions for a pending exam."""
+    run_id = None
     try:
         with SessionLocal() as db:
             exam = db.get(
@@ -371,7 +402,10 @@ def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable
                     .selectinload(TopicGroup.category)
                 ],
             )
-            if exam is None or not _claim(db, exam_id, generator):
+            if exam is None:
+                return
+            run_id = _claim(db, exam_id, generator)
+            if run_id is None:
                 return
             db.refresh(exam)
 
@@ -382,25 +416,37 @@ def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable
                 typed = [s for s in slots if s.question_type == sec["question_type"]]
                 size = BATCH_SIZE[sec["question_type"]]
                 for i in range(0, len(typed), size):
-                    drafts += _generate_batch(db, exam, generator, typed[i : i + size], seen, sleep)
+                    drafts += _generate_batch(db, exam, run_id, generator, typed[i : i + size], seen, sleep)
 
-            for d in drafts:
-                exam.questions.append(
-                    ExamQuestion(
-                        position=d.slot.slot,
-                        question_type=d.slot.question_type,
-                        difficulty=d.slot.difficulty,
-                        marks=d.slot.marks,
-                        topic_id=d.slot.topic_id,
-                        stem=d.stem,
-                        content=d.content,
-                        key=ExamQuestionKey(answer=d.answer, marking_guide=d.marking_guide, explanation=d.explanation),
-                    )
+            # Questions and the ready status commit together, and only if this run still owns the exam.
+            finished = db.execute(
+                update(Exam)
+                .where(Exam.id == exam_id, Exam.generation_id == run_id, Exam.status == "generating")
+                .values(status="ready", generated_at=utcnow(), updated_at=utcnow())
+                .execution_options(synchronize_session=False)
+            ).rowcount
+            if not finished:
+                db.rollback()
+                return
+            db.add_all(
+                ExamQuestion(
+                    exam_id=exam_id,
+                    position=d.slot.slot,
+                    question_type=d.slot.question_type,
+                    difficulty=d.slot.difficulty,
+                    marks=d.slot.marks,
+                    topic_id=d.slot.topic_id,
+                    stem=d.stem,
+                    content=d.content,
+                    key=ExamQuestionKey(answer=d.answer, marking_guide=d.marking_guide, explanation=d.explanation),
                 )
-            exam.status, exam.generated_at = "ready", utcnow()
+                for d in drafts
+            )
             db.commit()
+    except Superseded:
+        logger.info("Exam %s: generation run superseded or exam deleted; stopping", exam_id)
     except GenerationFailed as exc:
-        _fail(exam_id, exc.public_reason)
+        _fail(exam_id, exc.public_reason, run_id)
     except Exception:
         logger.exception("Exam %s generation crashed", exam_id)
-        _fail(exam_id, _UNEXPECTED)
+        _fail(exam_id, _UNEXPECTED, run_id)

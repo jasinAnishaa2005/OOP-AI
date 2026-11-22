@@ -555,3 +555,61 @@ def test_template_long_name_and_null_updates(client, seeded, admin):
         assert res.status_code == 422 and "cannot be null" in res.text
     res = client.patch(f"/api/admin/exam-templates/{tid}", json={"description": None}, headers=admin)
     assert res.status_code == 200 and res.json()["description"] is None
+
+
+def test_superseded_run_stops_without_storing_or_failing(client, seeded, student, provider):
+    provider(ScriptedGenerator(GenerationError("down", retryable=False)))
+    exam_id = client.post(
+        "/api/exams", json=custom({"topic_ids": topic_ids("Coupling")}, [sec("mcq", 12, 1)]), headers=student
+    ).json()["id"]
+
+    class TakenOver(ScriptedGenerator):
+        def generate(self, request):
+            with SessionLocal() as db:  # a retry resets the exam while this run is mid-flight
+                db.get(Exam, uuid.UUID(exam_id)).status = "pending"
+                db.commit()
+            return super().generate(request)
+
+    with SessionLocal() as db:
+        db.get(Exam, uuid.UUID(exam_id)).status = "pending"
+        db.commit()
+    old = TakenOver()
+    run_generation(uuid.UUID(exam_id), old)
+    assert len(old.requests) == 1  # stopped after its first batch instead of finishing all batches
+    exam = client.get(f"/api/exams/{exam_id}", headers=student).json()
+    assert exam["status"] == "pending" and exam["failure_reason"] is None
+
+    run_generation(uuid.UUID(exam_id), ScriptedGenerator())
+    exam = client.get(f"/api/exams/{exam_id}", headers=student).json()
+    assert exam["status"] == "ready" and [q["position"] for q in exam["questions"]] == list(range(1, 13))
+
+
+def test_deleted_exam_stops_generation_quietly(client, seeded, student, provider):
+    provider(ScriptedGenerator(GenerationError("down", retryable=False)))
+    exam_id = client.post(
+        "/api/exams", json=custom({"topic_ids": topic_ids("Coupling")}, [sec("mcq", 12, 1)]), headers=student
+    ).json()["id"]
+    with SessionLocal() as db:
+        db.get(Exam, uuid.UUID(exam_id)).status = "pending"
+        db.commit()
+
+    class Deleted(ScriptedGenerator):
+        def generate(self, request):
+            with SessionLocal() as db:
+                db.delete(db.get(Exam, uuid.UUID(exam_id)))
+                db.commit()
+            return super().generate(request)
+
+    gen = Deleted()
+    run_generation(uuid.UUID(exam_id), gen)
+    assert len(gen.requests) == 1
+    with SessionLocal() as db:
+        assert db.get(Exam, uuid.UUID(exam_id)) is None
+
+
+def test_retry_rate_limit_is_shared_across_exam_ids(client, seeded, student, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "exam_create_rate_limit", "3/minute")
+    statuses = [client.post(f"/api/exams/{uuid.uuid4()}/retry", headers=student).status_code for _ in range(5)]
+    assert statuses == [404, 404, 404, 429, 429]
