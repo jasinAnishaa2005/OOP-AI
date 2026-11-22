@@ -23,7 +23,19 @@ Milestone 1 (foundation + authentication) is implemented:
   (`mobile/src/theme/tokens.ts`) and reusable components (`mobile/src/components/`).
 - The signed-in home screen is a placeholder until the dashboard design is provided.
 
-Topics, exams, AI generation/evaluation, code execution and analytics are later milestones.
+Milestone 2 (backend only so far) adds the OOC topic library:
+
+- `topic_categories` → `topic_groups` (chapters) → `topics`, plus `topic_prerequisites`, with stable slugs,
+  ordering and active flags. The 12-category, 179-topic syllabus is seeded with `python -m app.seed` (idempotent;
+  existing rows and admin edits are never overwritten).
+- Student API (signed in): `GET /api/topics` (active tree), `GET /api/topics/categories`,
+  `GET /api/topics/search?q=`, `GET /api/topics/{id}`, `POST /api/topics/selection` (expands selected
+  categories/chapters/topics into a de-duplicated topic list with per-category counts).
+- Admin API (`/api/admin/topics/...`): full tree incl. inactive, create/edit/move/deactivate categories, chapters
+  and topics, reorder, set prerequisites (self and circular dependencies rejected), and re-seed.
+- The topic-selection screen is not built yet; it waits for the design reference.
+
+Exams, AI generation/evaluation, code execution and analytics are later milestones.
 
 ## Prerequisites
 
@@ -44,6 +56,7 @@ cp .env.example .env
 python -c "import secrets; print(secrets.token_urlsafe(64))"
 
 alembic upgrade head
+python -m app.seed          # load the OOC topic library
 uvicorn app.main:app --reload --port 8000
 ```
 
