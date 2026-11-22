@@ -110,7 +110,17 @@ def rotate_refresh_token(db: Session, refresh_token: str) -> IssuedTokens:
         raise AuthError("Invalid or expired refresh token", status_code=401)
 
     remaining = as_utc(record.expires_at) - now
-    record.revoked_at = now
+    # Conditional update so concurrent requests cannot both consume the same token.
+    claimed = db.execute(
+        update(RefreshToken)
+        .where(RefreshToken.id == record.id, RefreshToken.revoked_at.is_(None))
+        .values(revoked_at=now)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        _revoke_all_refresh_tokens(db, user.id)
+        db.commit()
+        raise AuthError("Invalid or expired refresh token", status_code=401)
     access_token, access_expires = create_access_token(user.id)
     new_refresh = generate_opaque_token()
     db.add(RefreshToken(user_id=user.id, token_hash=hash_opaque_token(new_refresh), expires_at=now + remaining))
@@ -185,8 +195,15 @@ def reset_password(db: Session, token: str, new_password: str) -> None:
     user = db.get(User, record.user_id)
     if user is None or not user.is_active:
         raise AuthError("Invalid or expired reset token", status_code=400)
+    claimed = db.execute(
+        update(PasswordResetToken)
+        .where(PasswordResetToken.id == record.id, PasswordResetToken.used_at.is_(None))
+        .values(used_at=now)
+    )
+    if claimed.rowcount != 1:
+        db.rollback()
+        raise AuthError("Invalid or expired reset token", status_code=400)
     user.password_hash = hash_password(new_password)
-    record.used_at = now
     db.execute(
         update(PasswordResetToken)
         .where(PasswordResetToken.user_id == user.id, PasswordResetToken.used_at.is_(None))
