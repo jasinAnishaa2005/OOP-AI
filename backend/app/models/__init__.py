@@ -1,7 +1,21 @@
+from app.models.exam import (
+    Exam,
+    ExamGenerationAttempt,
+    ExamQuestion,
+    ExamQuestionKey,
+    ExamTemplate,
+    ExamTopic,
+)
 from app.models.topic import Topic, TopicCategory, TopicGroup, topic_prerequisites
 from app.models.user import PasswordResetToken, RefreshToken, RevokedAccessToken, User, UserRole
 
 __all__ = [
+    "Exam",
+    "ExamGenerationAttempt",
+    "ExamQuestion",
+    "ExamQuestionKey",
+    "ExamTemplate",
+    "ExamTopic",
     "PasswordResetToken",
     "RefreshToken",
     "RevokedAccessToken",
