@@ -93,6 +93,7 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
     // The rounded row border already shows focus; drop the browser's default outline.
     outlineWidth: 0,
+    outlineStyle: 'solid',
   },
   toggle: { paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
   help: { marginTop: spacing.xs },
