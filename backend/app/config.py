@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,12 +34,28 @@ class Settings(BaseSettings):
     smtp_from: str | None = None
     smtp_use_tls: bool = True
 
+    # AI exam generation. Keys stay on the server; the mobile app never sees them.
+    ai_provider: Literal["fake", "gemini"] = "fake"
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-2.5-flash"
+    ai_timeout_seconds: int = 120
+    ai_max_attempts: int = Field(default=3, ge=1, le=5)
+    ai_retry_backoff_seconds: float = 2.0
+    exam_create_rate_limit: str = "10/minute"
+    exam_daily_limit: int = 30
+
     @field_validator("jwt_secret_key")
     @classmethod
     def _require_strong_secret(cls, value: str) -> str:
         if len(value) < 32:
             raise ValueError("JWT_SECRET_KEY must be set to at least 32 characters")
         return value
+
+    @model_validator(mode="after")
+    def _no_fake_ai_in_production(self) -> "Settings":
+        if self.environment == "production" and self.ai_provider == "fake":
+            raise ValueError("AI_PROVIDER must be a real provider (e.g. gemini) in production")
+        return self
 
     @property
     def smtp_configured(self) -> bool:
