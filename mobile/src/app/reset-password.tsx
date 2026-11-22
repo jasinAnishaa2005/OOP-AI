@@ -4,6 +4,7 @@ import { StyleSheet, View } from 'react-native';
 
 import { authApi } from '@/api/auth';
 import { BrandHeader, Button, FormMessage, Screen, TextField } from '@/components';
+import { useAuthStore } from '@/store/auth';
 import { spacing } from '@/theme';
 
 export default function ResetPasswordScreen() {
@@ -24,6 +25,8 @@ export default function ResetPasswordScreen() {
     setSubmitting(true);
     try {
       const res = await authApi.resetPassword(token.trim(), password);
+      // The server revoked every session; drop the local one too.
+      if (useAuthStore.getState().status === 'signedIn') await useAuthStore.getState().signOut();
       setDone(res.message);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Reset failed.');

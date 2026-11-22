@@ -31,6 +31,8 @@ export default function RootLayout() {
       <StatusBar style="dark" />
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: colors.background } }}>
         <Stack.Screen name="index" />
+        {/* Reachable from the email link whether or not a session is remembered. */}
+        <Stack.Screen name="reset-password" />
         <Stack.Protected guard={signedIn}>
           <Stack.Screen name="(app)" />
         </Stack.Protected>
