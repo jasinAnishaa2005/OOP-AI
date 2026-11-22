@@ -79,7 +79,7 @@ def create_template(db: Session, data: s.TemplateCreate) -> s.TemplateOut:
         duration_minutes=data.duration_minutes,
         sections=data.sections,
     )
-    slug = data.slug or slugify(data.name)
+    slug = data.slug or slugify(data.name)[:80].rstrip("-")
     if not slug:
         raise ExamError("Provide a slug: the name has no letters or digits to build one from", 422)
     order = (db.scalar(select(func.max(ExamTemplate.sort_order))) or 0) + 1

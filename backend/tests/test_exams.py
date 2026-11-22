@@ -542,3 +542,16 @@ def test_generation_runs_once_and_late_failure_keeps_ready_exam(client, seeded, 
     _fail(uuid.UUID(exam_id), "late failure")
     exam = client.get(f"/api/exams/{exam_id}", headers=student).json()
     assert exam["status"] == "ready" and len(exam["questions"]) == 2
+
+
+def test_template_long_name_and_null_updates(client, seeded, admin):
+    body = {"name": "A" * 50 + " " + "B" * 60, "duration_minutes": 20, "sections": [sec("mcq", 5, 1)]}
+    res = client.post("/api/admin/exam-templates", json=body, headers=admin)
+    assert res.status_code == 201, res.text
+    assert len(res.json()["slug"]) <= 80 and not res.json()["slug"].endswith("-")
+    tid = res.json()["id"]
+    for field in ("name", "sort_order", "is_active", "sections"):
+        res = client.patch(f"/api/admin/exam-templates/{tid}", json={field: None}, headers=admin)
+        assert res.status_code == 422 and "cannot be null" in res.text
+    res = client.patch(f"/api/admin/exam-templates/{tid}", json={"description": None}, headers=admin)
+    assert res.status_code == 200 and res.json()["description"] is None

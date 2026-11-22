@@ -126,6 +126,13 @@ class TemplateUpdate(BaseModel):
     sort_order: int | None = Field(default=None, ge=0)
     is_active: bool | None = None
 
+    @model_validator(mode="after")
+    def _no_null_required_fields(self) -> "TemplateUpdate":
+        nulls = [f for f in self.model_fields_set - {"description"} if getattr(self, f) is None]
+        if nulls:
+            raise ValueError(f"{', '.join(sorted(nulls))} cannot be null")
+        return self
+
 
 # ---------- Exams ----------
 
