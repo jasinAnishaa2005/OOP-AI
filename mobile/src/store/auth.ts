@@ -6,6 +6,10 @@ import { secureStorage } from '@/lib/secureStorage';
 
 const REFRESH_KEY = 'oopai.refreshToken';
 
+/** Offline, rate-limited or server errors: the refresh token may still be valid, so keep it. */
+const isTransient = (error: unknown) =>
+  error instanceof ApiError && (error.status === 0 || error.status === 429 || error.status >= 500);
+
 type Status = 'loading' | 'signedOut' | 'signedIn';
 
 type AuthState = {
@@ -55,8 +59,8 @@ export const useAuthStore = create<AuthState>((set, get) => {
       try {
         await applyTokens(await authApi.refresh(stored), true);
       } catch (error) {
-        if (error instanceof ApiError && error.status === 0) {
-          // Offline: keep the stored session so the next launch can retry.
+        if (isTransient(error)) {
+          // Keep the stored session so the next launch can retry.
           set({ status: 'signedOut' });
           return;
         }
@@ -86,8 +90,8 @@ export const useAuthStore = create<AuthState>((set, get) => {
         const tokens = await authApi.refresh(refreshToken);
         await applyTokens(tokens, persist);
         return tokens.access_token;
-      } catch {
-        await clear();
+      } catch (error) {
+        if (!isTransient(error)) await clear();
         return null;
       }
     },
