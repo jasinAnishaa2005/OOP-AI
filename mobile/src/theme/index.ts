@@ -4,3 +4,4 @@ export const theme = { palette, colors, radii, spacing, typography, fontFamilies
 export type Theme = typeof theme;
 export type TypographyVariant = keyof typeof typography;
 export { colors, fontFamilies, layout, palette, radii, shadows, spacing, typography };
+export { usePaperFrame, type PaperFrame } from './frame';
