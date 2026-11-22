@@ -172,15 +172,20 @@ TOPIC_LIBRARY: Library = [
     (
         "Refactoring Techniques",
         [
-            ("Composing Methods", ["Extract Method", "Inline Method", "Rename Method"]),
+            ("Composing Methods", ["Extract Method", "Inline Method"]),
             ("Moving Features Between Objects", ["Extract Class", "Inline Class", "Move Method", "Move Field"]),
             (
                 "Organizing Data",
                 ["Encapsulate Field", "Replace Magic Number with Constant", "Replace Type Code with Subclasses"],
             ),
             (
-                "Simplifying Conditionals and Calls",
-                ["Replace Conditional with Polymorphism", "Introduce Parameter Object", "Preserve Whole Object"],
+                "Simplifying Conditionals and Method Calls",
+                [
+                    "Replace Conditional with Polymorphism",
+                    "Rename Method",
+                    "Introduce Parameter Object",
+                    "Preserve Whole Object",
+                ],
             ),
             (
                 "Dealing with Generalization",
