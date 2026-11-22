@@ -1,7 +1,7 @@
 import uuid
 from collections.abc import Iterable
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -141,7 +141,14 @@ def search_topics(db: Session, query: str, limit: int) -> s.SearchResults:
                 func.lower(TopicCategory.name).like(pattern, escape="\\"),
             ),
         )
-        .order_by(TopicCategory.sort_order, TopicGroup.sort_order, Topic.sort_order, Topic.name)
+        .order_by(
+            TopicCategory.sort_order,
+            TopicCategory.name,
+            TopicGroup.sort_order,
+            TopicGroup.name,
+            Topic.sort_order,
+            Topic.name,
+        )
     )
     matches = list(db.scalars(stmt))
     q = query.lower()
@@ -245,10 +252,17 @@ def _apply(node, data: dict) -> None:
         setattr(node, key, value)
 
 
+def _slug(data: s._NodeCreate) -> str:
+    slug = data.slug or s.slugify(data.name)
+    if not slug:
+        raise TopicError("Provide a slug: the name has no letters or digits to build one from", 422)
+    return slug
+
+
 def create_category(db: Session, data: s.CategoryCreate) -> TopicCategory:
     category = TopicCategory(
         name=data.name,
-        slug=data.slug or s.slugify(data.name),
+        slug=_slug(data),
         description=data.description,
         is_active=data.is_active,
         sort_order=data.sort_order if data.sort_order is not None else _next_order(db, TopicCategory.sort_order),
@@ -270,7 +284,7 @@ def create_group(db: Session, data: s.GroupCreate) -> TopicGroup:
     group = TopicGroup(
         category_id=data.category_id,
         name=data.name,
-        slug=data.slug or s.slugify(data.name),
+        slug=_slug(data),
         description=data.description,
         is_active=data.is_active,
         sort_order=data.sort_order
@@ -300,7 +314,7 @@ def create_topic(db: Session, data: s.TopicCreate) -> Topic:
     topic = Topic(
         group_id=data.group_id,
         name=data.name,
-        slug=data.slug or s.slugify(data.name),
+        slug=_slug(data),
         description=data.description,
         is_active=data.is_active,
         sort_order=data.sort_order
@@ -354,7 +368,14 @@ def reorder_topics(db: Session, group_id: uuid.UUID, ids: list[uuid.UUID]) -> No
     _reorder(db, _get(db, TopicGroup, group_id, "Chapter").topics, ids)
 
 
+_PREREQUISITE_LOCK = 0x0_0A1_70A1C  # arbitrary app-wide advisory lock key
+
+
 def _set_prerequisites(db: Session, topic: Topic, prerequisite_ids: list[uuid.UUID]) -> None:
+    if db.get_bind().dialect.name == "postgresql":
+        # Serialise prerequisite edits so two concurrent requests cannot each pass the cycle check.
+        db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _PREREQUISITE_LOCK})
+        db.expire(topic, ["prerequisites"])
     ids = list(dict.fromkeys(prerequisite_ids))
     if topic.id in ids:
         raise TopicError("A topic cannot be its own prerequisite", 422)
