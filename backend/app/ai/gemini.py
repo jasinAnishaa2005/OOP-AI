@@ -9,6 +9,7 @@ from app.ai.base import GenerationError, GenerationRequest, GenerationResponse
 
 _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
 # Errors that are specific to one model (overloaded, quota, retired), so the next fallback model may still work.
+# A model that times out is treated the same way.
 _TRY_NEXT_MODEL = {404, 429, 500, 503, 504}
 
 
@@ -44,7 +45,10 @@ class GeminiGenerator:
             try:
                 return self._call_with_deadline(model, request, config, deadline)
             except GenerationError as exc:
-                if not isinstance(exc.__cause__, errors.APIError) or exc.__cause__.code not in _TRY_NEXT_MODEL:
+                model_specific = exc.kind == "timeout" or (
+                    isinstance(exc.__cause__, errors.APIError) and exc.__cause__.code in _TRY_NEXT_MODEL
+                )
+                if not model_specific:
                     raise
                 if exc.retryable:
                     retryable = exc

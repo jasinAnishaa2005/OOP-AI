@@ -478,3 +478,32 @@ def test_lease_outlasts_the_longest_possible_gemini_request(gemini_settings):
 def test_zero_ai_timeout_is_rejected_at_startup():
     with pytest.raises(ValidationError):
         Settings(ai_timeout_seconds=0)
+
+
+def test_a_primary_that_keeps_timing_out_falls_back_to_a_healthy_model():
+    from app.ai.gemini import GeminiGenerator
+
+    class Models:
+        calls: list[str] = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs["model"])
+            if kwargs["model"] == "a":
+                time.sleep(1.0)
+            return SimpleNamespace(text='{"questions": []}', usage_metadata=None)
+
+    models = Models()
+    generator = GeminiGenerator("unused", "a", 0.2, client=SimpleNamespace(models=models), fallback_models=("b",))
+    started = time.monotonic()
+    assert generator.generate(REQUEST).model == "b"
+    assert models.calls == ["a", "b"] and time.monotonic() - started < 0.2 * 2 + 0.15
+
+
+def test_when_every_model_times_out_the_request_still_ends_within_the_overall_limit():
+    generator, models = slow_gemini(delay=1.0, timeout=0.2)
+    generator.models = ["a", "b", "c"]
+    started = time.monotonic()
+    with pytest.raises(GenerationError) as info:
+        generator.generate(REQUEST)
+    assert info.value.kind == "timeout" and info.value.retryable
+    assert models.started == 3 and time.monotonic() - started < 0.2 * 3 + 0.15
