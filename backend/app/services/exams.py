@@ -1,8 +1,10 @@
+import hashlib
+import json
 import uuid
 from datetime import timedelta
 
 from pydantic import ValidationError
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, delete, func, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -12,8 +14,7 @@ from app.models import Exam, ExamGenerationRequest, ExamQuestion, ExamTemplate, 
 from app.schemas import exams as s
 from app.schemas.topics import TopicPath, TopicRef, slugify
 from app.services import topics as topic_service
-
-STALE_GENERATION = timedelta(minutes=15)
+from app.services.exam_generation import generation_lease
 
 
 class ExamError(Exception):
@@ -123,16 +124,28 @@ def update_template(db: Session, template_id: uuid.UUID, data: s.TemplateUpdate)
 # ---------- Exams ----------
 
 
+def _lock_user(db: Session, user: User) -> None:
+    """Serialize one student's exam requests. SQLite ignores FOR UPDATE, so take its write lock with a no-op update."""
+    if db.get_bind().dialect.name == "sqlite":
+        db.execute(text("UPDATE users SET id = id WHERE id = :id"), {"id": user.id.hex})
+    else:
+        db.execute(select(User.id).where(User.id == user.id).with_for_update())
+
+
 def _check_daily_quota(db: Session, user: User) -> None:
-    """Creations and retries both count; the ledger survives exam deletion."""
+    """Creations and retries count unless their generation failed; the ledger survives exam deletion."""
     limit = get_settings().exam_daily_limit
-    # Lock the user row so concurrent requests cannot all pass the check (no-op on SQLite, which serialises writes).
-    db.execute(select(User.id).where(User.id == user.id).with_for_update())
+    # Lock the user row so concurrent requests cannot all pass the check.
+    _lock_user(db, user)
     since = utcnow() - timedelta(days=1)
     used = db.scalar(
         select(func.count())
         .select_from(ExamGenerationRequest)
-        .where(ExamGenerationRequest.user_id == user.id, ExamGenerationRequest.created_at >= since)
+        .where(
+            ExamGenerationRequest.user_id == user.id,
+            ExamGenerationRequest.created_at >= since,
+            ExamGenerationRequest.outcome != "failed",
+        )
     )
     if used >= limit:
         raise ExamError(f"Daily limit of {limit} exam generations reached", 429)
@@ -142,14 +155,25 @@ def _existing_exam(db: Session, user: User, idempotency_key: str) -> Exam | None
     return db.scalars(select(Exam).where(Exam.user_id == user.id, Exam.idempotency_key == idempotency_key)).first()
 
 
+def _request_hash(data: s.ExamCreate) -> str:
+    return hashlib.sha256(json.dumps(data.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+
+
+def _replay(existing: Exam, request_hash: str) -> tuple[Exam, bool]:
+    if existing.idempotency_hash not in (None, request_hash):
+        raise ExamError("This Idempotency-Key was already used for a different exam request", 409)
+    return existing, False
+
+
 def create_exam(db: Session, user: User, data: s.ExamCreate, idempotency_key: str | None = None) -> tuple[Exam, bool]:
     """Returns (exam, created). A repeated idempotency key returns the original exam without generating again."""
+    request_hash = _request_hash(data)
     if idempotency_key is not None:
         # Same user-row lock as the quota check, so concurrent duplicates wait for the first one to commit.
-        db.execute(select(User.id).where(User.id == user.id).with_for_update())
+        _lock_user(db, user)
         existing = _existing_exam(db, user, idempotency_key)
         if existing is not None:
-            return existing, False
+            return _replay(existing, request_hash)
     _check_daily_quota(db, user)
 
     template = None
@@ -190,6 +214,7 @@ def create_exam(db: Session, user: User, data: s.ExamCreate, idempotency_key: st
         sections=[sec.model_dump() for sec in spec.sections],
         status="pending",
         idempotency_key=idempotency_key,
+        idempotency_hash=request_hash if idempotency_key is not None else None,
         topic_links=[ExamTopic(topic_id=tid, position=i) for i, tid in enumerate(selection.topic_ids)],
     )
     try:
@@ -202,7 +227,7 @@ def create_exam(db: Session, user: User, data: s.ExamCreate, idempotency_key: st
         existing = _existing_exam(db, user, idempotency_key) if idempotency_key is not None else None
         if existing is None:
             raise
-        return existing, False
+        return _replay(existing, request_hash)
     return exam, True
 
 
@@ -256,10 +281,17 @@ def list_exams(
 
 def retry_exam(db: Session, user: User, exam_id: uuid.UUID) -> Exam:
     exam = get_exam(db, user, exam_id)
-    stale_before = utcnow() - STALE_GENERATION
+    stale_before = utcnow() - generation_lease()
     stuck = exam.status in ("pending", "generating") and as_utc(exam.updated_at) < stale_before
     if exam.status != "failed" and not stuck:
         raise ExamError("Only failed exams can be regenerated", 409)
+    # The abandoned run's request no longer counts; the retry gets its own ledger row below.
+    db.execute(
+        update(ExamGenerationRequest)
+        .where(ExamGenerationRequest.exam_id == exam.id, ExamGenerationRequest.outcome == "pending")
+        .values(outcome="failed")
+        .execution_options(synchronize_session=False)
+    )
     _check_daily_quota(db, user)
     # Compare-and-set so overlapping retries cannot both reset the exam.
     claimed = db.execute(
@@ -271,7 +303,7 @@ def retry_exam(db: Session, user: User, exam_id: uuid.UUID) -> Exam:
                 and_(Exam.status.in_(("pending", "generating")), Exam.updated_at < stale_before),
             ),
         )
-        .values(status="pending", failure_reason=None, generation_id=None, updated_at=utcnow())
+        .values(status="pending", failure_reason=None, generation_id=None, generation_runs=0, updated_at=utcnow())
         .execution_options(synchronize_session=False)
     ).rowcount
     if not claimed:

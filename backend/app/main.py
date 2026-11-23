@@ -1,11 +1,22 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from slowapi import _rate_limit_exceeded_handler
-from slowapi.errors import RateLimitExceeded
 
 from app.api.routes import admin_exams, admin_topics, auth, exams, health, topics
 from app.config import get_settings
-from app.core.rate_limit import limiter
+from app.services.generation_worker import GenerationRecovery
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    recovery = GenerationRecovery() if get_settings().generation_recovery_enabled else None
+    if recovery:
+        recovery.start()
+    yield
+    if recovery:
+        recovery.stop()
 
 
 def create_app() -> FastAPI:
@@ -15,9 +26,8 @@ def create_app() -> FastAPI:
         version="0.1.0",
         docs_url=f"{settings.api_prefix}/docs",
         openapi_url=f"{settings.api_prefix}/openapi.json",
+        lifespan=lifespan,
     )
-    app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins,

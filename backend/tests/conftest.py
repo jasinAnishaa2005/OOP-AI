@@ -4,12 +4,12 @@ os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-that-is-long-enough-for-hs256-signing")
 os.environ.setdefault("AI_PROVIDER", "fake")
 os.environ.setdefault("AI_RETRY_BACKOFF_SECONDS", "0")
+os.environ.setdefault("GENERATION_RECOVERY_ENABLED", "false")
 os.environ.setdefault("DATABASE_URL", os.environ.get("TEST_DATABASE_URL", "sqlite+pysqlite:///./test.db"))
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.core.rate_limit import limiter  # noqa: E402
 from app.db import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services.email import get_email_sender  # noqa: E402
@@ -27,7 +27,6 @@ class OutboxSender:
 def _reset_db():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
-    limiter.reset()
     yield
     Base.metadata.drop_all(engine)
 

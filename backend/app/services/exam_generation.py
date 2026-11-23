@@ -8,16 +8,26 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 
 from pydantic import ValidationError
-from sqlalchemy import update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.ai.base import ExamGenerator, GenerationError, GenerationRequest, PlannedSlot
 from app.config import get_settings
 from app.core.time import utcnow
 from app.db import SessionLocal
-from app.models import Exam, ExamGenerationAttempt, ExamQuestion, ExamQuestionKey, ExamTopic, Topic, TopicGroup
+from app.models import (
+    Exam,
+    ExamGenerationAttempt,
+    ExamGenerationRequest,
+    ExamQuestion,
+    ExamQuestionKey,
+    ExamTopic,
+    Topic,
+    TopicGroup,
+)
 from app.schemas.exam_output import BATCH_MODELS
 from app.schemas.exams import QUESTION_TYPE_LABELS
 
@@ -273,6 +283,7 @@ def parse_and_validate(text: str, slots: list[PlannedSlot], seen_stems: set[str]
 _UNAVAILABLE = "The AI service is unavailable right now. Please retry in a few minutes."
 _INVALID = "The AI could not produce valid questions for this exam. Please retry."
 _UNEXPECTED = "Exam generation failed unexpectedly. Please retry."
+_INTERRUPTED = "Exam generation was interrupted. Please retry."
 
 
 class Superseded(Exception):
@@ -367,6 +378,7 @@ def _claim(db: Session, exam_id: uuid.UUID, generator: ExamGenerator) -> uuid.UU
         .values(
             status="generating",
             generation_id=run_id,
+            generation_runs=Exam.generation_runs + 1,
             failure_reason=None,
             provider=generator.provider,
             model=generator.model,
@@ -379,14 +391,32 @@ def _claim(db: Session, exam_id: uuid.UUID, generator: ExamGenerator) -> uuid.UU
     return run_id if claimed else None
 
 
-def _fail(exam_id: uuid.UUID, reason: str, run_id: uuid.UUID | None = None) -> None:
-    """Mark a generating exam failed; never touches an exam another run finished or took over."""
-    where = [Exam.id == exam_id, Exam.status == "generating"]
+def _settle_usage(db: Session, exam_id: uuid.UUID, outcome: str) -> None:
+    """Close the exam's open ledger row: failed generations stop counting toward the daily limit."""
+    db.execute(
+        update(ExamGenerationRequest)
+        .where(ExamGenerationRequest.exam_id == exam_id, ExamGenerationRequest.outcome == "pending")
+        .values(outcome=outcome)
+        .execution_options(synchronize_session=False)
+    )
+
+
+def _fail(exam_id: uuid.UUID, reason: str, run_id: uuid.UUID | None = None, statuses=("generating",)) -> bool:
+    """Mark an exam failed; never touches an exam another run finished or took over."""
+    where = [Exam.id == exam_id, Exam.status.in_(statuses)]
     if run_id is not None:
         where.append(Exam.generation_id == run_id)
     with SessionLocal() as db:
-        db.execute(update(Exam).where(*where).values(status="failed", failure_reason=reason, updated_at=utcnow()))
+        failed = db.execute(
+            update(Exam)
+            .where(*where)
+            .values(status="failed", failure_reason=reason, updated_at=utcnow())
+            .execution_options(synchronize_session=False)
+        ).rowcount
+        if failed:
+            _settle_usage(db, exam_id, "failed")
         db.commit()
+    return bool(failed)
 
 
 def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable[[float], None] = time.sleep) -> None:
@@ -438,6 +468,7 @@ def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable
             if not finished:
                 db.rollback()
                 return
+            _settle_usage(db, exam_id, "succeeded")
             db.add_all(
                 ExamQuestion(
                     exam_id=exam_id,
@@ -460,3 +491,52 @@ def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable
     except Exception:
         logger.exception("Exam %s generation crashed", exam_id)
         _fail(exam_id, _UNEXPECTED, run_id)
+
+
+# ---------- Recovery after crashes and restarts ----------
+
+
+def generation_lease(settings=None) -> timedelta:
+    """How long a generating exam may go without a heartbeat before it is presumed abandoned."""
+    settings = settings or get_settings()
+    longest_gap = settings.ai_timeout_seconds + settings.ai_retry_backoff_seconds * settings.ai_max_attempts + 60
+    return timedelta(seconds=max(settings.generation_lease_seconds, longest_gap))
+
+
+def recover_stuck_exams(limit: int = 20) -> list[uuid.UUID]:
+    """Find exams a dead worker left behind and return the ones to generate again.
+
+    Pending exams nobody claimed, and generating exams whose heartbeat expired, are reset to pending (claiming
+    stays atomic, so several workers recovering at once still generate each exam once). Exams that already used
+    `generation_max_runs` runs are failed instead, which also releases their daily-limit entry."""
+    settings = get_settings()
+    now = utcnow()
+    pending_cutoff = now - timedelta(seconds=settings.generation_pending_grace_seconds)
+    stale_cutoff = now - generation_lease(settings)
+    abandoned = or_(
+        and_(Exam.status == "pending", Exam.updated_at < pending_cutoff),
+        and_(Exam.status == "generating", Exam.updated_at < stale_cutoff),
+    )
+    with SessionLocal() as db:
+        stuck = db.execute(
+            select(Exam.id, Exam.status, Exam.generation_runs).where(abandoned).order_by(Exam.updated_at).limit(limit)
+        ).all()
+        to_run: list[uuid.UUID] = []
+        for exam_id, exam_status, runs in stuck:
+            if runs >= settings.generation_max_runs:
+                if _fail(exam_id, _INTERRUPTED, statuses=("pending", "generating")):
+                    logger.warning("Exam %s: gave up after %d interrupted generation runs", exam_id, runs)
+                continue
+            if exam_status == "generating":
+                reset = db.execute(
+                    update(Exam)
+                    .where(Exam.id == exam_id, Exam.status == "generating", Exam.updated_at < stale_cutoff)
+                    .values(status="pending", generation_id=None, updated_at=utcnow())
+                    .execution_options(synchronize_session=False)
+                ).rowcount
+                db.commit()
+                if not reset:
+                    continue
+            logger.info("Exam %s: recovering abandoned generation (status was %s)", exam_id, exam_status)
+            to_run.append(exam_id)
+    return to_run

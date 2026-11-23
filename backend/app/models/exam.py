@@ -49,7 +49,11 @@ class Exam(_Timestamps, Base):
     model: Mapped[str | None] = mapped_column(String(80))
     prompt_version: Mapped[str | None] = mapped_column(String(20))
     generation_id: Mapped[uuid.UUID | None] = mapped_column()
+    # Generation runs started since the student last asked for one; caps automatic recovery after crashes.
+    generation_runs: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     idempotency_key: Mapped[str | None] = mapped_column(String(100))
+    # Hash of the create request, so reusing a key for a different exam request is rejected.
+    idempotency_hash: Mapped[str | None] = mapped_column(String(64))
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     template: Mapped[ExamTemplate | None] = relationship()
@@ -133,11 +137,14 @@ class ExamGenerationAttempt(Base):
 
 
 class ExamGenerationRequest(Base):
-    """Usage ledger: one row per exam creation or retry. Kept when the exam is deleted so quotas hold."""
+    """Usage ledger: one row per exam creation or retry. Kept when the exam is deleted so quotas hold.
+
+    `outcome` is pending until generation finishes; failed generations do not count toward the daily limit."""
 
     __tablename__ = "exam_generation_requests"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
-    exam_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("exams.id", ondelete="SET NULL"))
+    exam_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("exams.id", ondelete="SET NULL"), index=True)
+    outcome: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

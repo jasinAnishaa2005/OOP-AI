@@ -45,7 +45,17 @@ Milestone 3 (backend only so far) adds AI exam generation:
   `/api/topics/selection`), `GET /api/exams`, `GET /api/exams/{id}`, `POST /api/exams/{id}/retry`,
   `DELETE /api/exams/{id}`. Generation runs in the background; poll the exam until `status` is `ready` or `failed`.
   Send an optional `Idempotency-Key` header (1–100 chars) on `POST /api/exams`: repeating it returns the same
-  exam instead of creating and paying for another one (double taps, network retries).
+  exam instead of creating and paying for another one (double taps, network retries); reusing a key with a
+  different request body returns 409.
+- Reliability: every API process runs a recovery sweep (on start and every
+  `GENERATION_RECOVERY_INTERVAL_SECONDS`) that resumes exams a crash, restart or deploy left `pending` or
+  `generating` with an expired heartbeat. Claiming is atomic, so several workers never generate one exam twice; after
+  `GENERATION_MAX_RUNS` interrupted runs the exam is failed and the student can retry.
+- Daily limit (`EXAM_DAILY_LIMIT`): creations and retries count while generating and once ready, including after
+  the exam is deleted; generations that end `failed` stop counting.
+- Rate limits are stored in the database (`rate_limit_buckets`), so all workers and servers share them. Auth uses a
+  strict per-account limit (`AUTH_RATE_LIMIT`) plus a generous per-IP limit (`AUTH_IP_RATE_LIMIT`) so a campus
+  network shared by many students is not locked out; exam creation and retry are limited per student.
 - Admin API: `GET/POST/PATCH /api/admin/exam-templates`, `GET /api/admin/exams`, `GET /api/admin/exams/{id}`
   (includes answers, marking guides and the log of AI attempts).
 - The server plans every question slot (type, difficulty, marks, topic) from the selected topics only; the AI
@@ -82,6 +92,10 @@ alembic upgrade head
 python -m app.seed          # load the OOC topic library
 uvicorn app.main:app --reload --port 8000
 ```
+
+Production: `uvicorn app.main:app --workers 4 --proxy-headers --forwarded-allow-ips=<reverse proxy IP>` against
+PostgreSQL (`--proxy-headers` makes the per-IP limit see the real client address; without it every request appears to
+come from the proxy). Run `alembic upgrade head` before starting the new version.
 
 API docs: http://localhost:8000/api/docs
 

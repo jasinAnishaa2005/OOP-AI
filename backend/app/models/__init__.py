@@ -7,6 +7,7 @@ from app.models.exam import (
     ExamTemplate,
     ExamTopic,
 )
+from app.models.rate_limit import RateLimitBucket
 from app.models.topic import Topic, TopicCategory, TopicGroup, topic_prerequisites
 from app.models.user import PasswordResetToken, RefreshToken, RevokedAccessToken, User, UserRole
 
@@ -19,6 +20,7 @@ __all__ = [
     "ExamTemplate",
     "ExamTopic",
     "PasswordResetToken",
+    "RateLimitBucket",
     "RefreshToken",
     "RevokedAccessToken",
     "Topic",

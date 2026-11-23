@@ -29,7 +29,6 @@ def templates(db: Session = Depends(get_db)) -> list[s.TemplateOut]:
 
 
 @router.post("", response_model=s.ExamOut, status_code=status.HTTP_202_ACCEPTED)
-@limiter.limit(lambda: get_settings().exam_create_rate_limit)
 def create_exam(
     request: Request,
     body: s.ExamCreate,
@@ -39,6 +38,7 @@ def create_exam(
     generator: ExamGenerator = Depends(get_exam_generator),
     idempotency_key: str | None = Header(default=None, min_length=1, max_length=100),
 ) -> s.ExamOut:
+    limiter.enforce("exam:create", str(user.id), get_settings().exam_create_rate_limit)
     exam, created = _call(svc.create_exam, db, user, body, idempotency_key)
     if created:
         background.add_task(run_generation, exam.id, generator)
@@ -61,7 +61,6 @@ def get_exam(exam_id: uuid.UUID, db: Session = Depends(get_db), user: User = Dep
 
 
 @router.post("/{exam_id}/retry", response_model=s.ExamOut, status_code=status.HTTP_202_ACCEPTED)
-@limiter.limit(lambda: get_settings().exam_create_rate_limit)
 def retry(
     request: Request,
     exam_id: uuid.UUID,
@@ -70,6 +69,7 @@ def retry(
     user: User = Depends(get_current_user),
     generator: ExamGenerator = Depends(get_exam_generator),
 ) -> s.ExamOut:
+    limiter.enforce("exam:retry", str(user.id), get_settings().exam_create_rate_limit)
     exam = _call(svc.retry_exam, db, user, exam_id)
     background.add_task(run_generation, exam.id, generator)
     return svc.exam_out(svc.get_exam(db, user, exam.id))

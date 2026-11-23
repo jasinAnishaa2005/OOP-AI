@@ -1,8 +1,20 @@
+import re
 from functools import lru_cache
 from typing import Literal
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_PERIODS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
+_LIMIT = re.compile(r"^\s*(\d+)\s*(?:/|per)\s*(\d+)?\s*(second|minute|hour|day)s?\s*$")
+
+
+def parse_limit(limit: str) -> tuple[int, int]:
+    """'10/minute' -> (10, 60); also accepts '5 per 2 hours'."""
+    match = _LIMIT.match(limit.lower())
+    if not match:
+        raise ValueError(f"Invalid rate limit: {limit!r}")
+    return int(match[1]), int(match[2] or 1) * _PERIODS[match[3]]
 
 
 class Settings(BaseSettings):
@@ -24,7 +36,10 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:8081", "http://localhost:19006"]
 
     rate_limit_enabled: bool = True
+    # Per account identifier (email / student ID). Limits are stored in the database, so all workers share them.
     auth_rate_limit: str = "10/minute"
+    # Per client IP; generous because a whole campus can share one address behind NAT.
+    auth_ip_rate_limit: str = "100/minute"
 
     password_reset_url: str = "oopai://reset-password"
     smtp_host: str | None = None
@@ -43,14 +58,28 @@ class Settings(BaseSettings):
     ai_timeout_seconds: int = 300
     ai_max_attempts: int = Field(default=3, ge=1, le=5)
     ai_retry_backoff_seconds: float = 10.0
-    exam_create_rate_limit: str = "10/minute"
+    exam_create_rate_limit: str = "10/minute"  # per student, shared by all workers
     exam_daily_limit: int = 30
+
+    # Recovery of exams left pending/generating by a crashed or restarted server (runs in every API worker).
+    generation_recovery_enabled: bool = True
+    generation_recovery_interval_seconds: float = 60.0
+    generation_pending_grace_seconds: int = 120
+    generation_lease_seconds: int = 900
+    generation_max_runs: int = Field(default=3, ge=1)
+    generation_workers: int = Field(default=2, ge=1)
 
     @field_validator("jwt_secret_key")
     @classmethod
     def _require_strong_secret(cls, value: str) -> str:
         if len(value) < 32:
             raise ValueError("JWT_SECRET_KEY must be set to at least 32 characters")
+        return value
+
+    @field_validator("auth_rate_limit", "auth_ip_rate_limit", "exam_create_rate_limit")
+    @classmethod
+    def _valid_rate_limit(cls, value: str) -> str:
+        parse_limit(value)
         return value
 
     @model_validator(mode="after")
