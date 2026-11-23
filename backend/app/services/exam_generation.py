@@ -401,9 +401,11 @@ def _settle_usage(db: Session, exam_id: uuid.UUID, outcome: str) -> None:
     )
 
 
-def _fail(exam_id: uuid.UUID, reason: str, run_id: uuid.UUID | None = None, statuses=("generating",)) -> bool:
-    """Mark an exam failed; never touches an exam another run finished or took over."""
-    where = [Exam.id == exam_id, Exam.status.in_(statuses)]
+def _fail(exam_id: uuid.UUID, reason: str, run_id: uuid.UUID | None = None, statuses=("generating",), still=()) -> bool:
+    """Mark an exam failed; never touches an exam another run finished or took over.
+
+    `still` holds extra conditions re-checked in the same UPDATE, so state observed earlier cannot be stale."""
+    where = [Exam.id == exam_id, Exam.status.in_(statuses), *still]
     if run_id is not None:
         where.append(Exam.generation_id == run_id)
     with SessionLocal() as db:
@@ -499,8 +501,20 @@ def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable
 def generation_lease(settings=None) -> timedelta:
     """How long a generating exam may go without a heartbeat before it is presumed abandoned."""
     settings = settings or get_settings()
-    longest_gap = settings.ai_timeout_seconds + settings.ai_retry_backoff_seconds * settings.ai_max_attempts + 60
+    # Heartbeats happen after every attempt. One attempt may try the primary model and every fallback model, each
+    # up to the timeout, and follows a backoff sleep; a healthy run is never quieter than that.
+    longest_gap = (
+        settings.ai_timeout_seconds * _models_per_attempt(settings)
+        + settings.ai_retry_backoff_seconds * settings.ai_max_attempts
+        + 60
+    )
     return timedelta(seconds=max(settings.generation_lease_seconds, longest_gap))
+
+
+def _models_per_attempt(settings) -> int:
+    if settings.ai_provider != "gemini":
+        return 1
+    return len(dict.fromkeys([settings.gemini_model, *settings.gemini_fallback_model_list]))
 
 
 def recover_stuck_exams(limit: int = 20) -> list[uuid.UUID]:
@@ -519,12 +533,21 @@ def recover_stuck_exams(limit: int = 20) -> list[uuid.UUID]:
     )
     with SessionLocal() as db:
         stuck = db.execute(
-            select(Exam.id, Exam.status, Exam.generation_runs).where(abandoned).order_by(Exam.updated_at).limit(limit)
+            select(Exam.id, Exam.status, Exam.generation_runs, Exam.generation_id)
+            .where(abandoned)
+            .order_by(Exam.updated_at)
+            .limit(limit)
         ).all()
         to_run: list[uuid.UUID] = []
-        for exam_id, exam_status, runs in stuck:
+        for exam_id, exam_status, runs, run_owner in stuck:
             if runs >= settings.generation_max_runs:
-                if _fail(exam_id, _INTERRUPTED, statuses=("pending", "generating")):
+                # A student retry in the meantime resets the run count, owner and heartbeat; leave that run alone.
+                still_abandoned = (
+                    Exam.generation_runs >= settings.generation_max_runs,
+                    Exam.updated_at < (pending_cutoff if exam_status == "pending" else stale_cutoff),
+                    Exam.generation_id == run_owner if run_owner else Exam.generation_id.is_(None),
+                )
+                if _fail(exam_id, _INTERRUPTED, statuses=(exam_status,), still=still_abandoned):
                     logger.warning("Exam %s: gave up after %d interrupted generation runs", exam_id, runs)
                 continue
             if exam_status == "generating":

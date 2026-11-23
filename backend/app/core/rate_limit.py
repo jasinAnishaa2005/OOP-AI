@@ -3,11 +3,13 @@
 import hashlib
 import random
 import time
+from dataclasses import dataclass
 
 from fastapi import HTTPException, Request, status
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.orm import Session
 
 from app.config import get_settings, parse_limit
 from app.db import SessionLocal
@@ -19,39 +21,68 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+@dataclass(frozen=True)
+class Bucket:
+    """The counter a request was charged to, so a successful login can hand its attempt back."""
+
+    key: str
+    window_start: int
+
+
 class RateLimiter:
-    def hit(self, scope: str, subject: str, limit: str) -> int | None:
-        """Count one request; returns seconds until the window resets if the limit is exceeded, else None."""
+    """Counts run on the request's own database session, so a limited request never needs a second connection.
+
+    Each call commits immediately: the count must survive even if the request fails afterwards."""
+
+    def _charge(self, db: Session, scope: str, subject: str, limit: str) -> tuple[Bucket, int | None]:
         amount, period = parse_limit(limit)
         now = int(time.time())
         window = now - now % period
         key = hashlib.sha256(f"{scope}:{period}:{subject}".encode()).hexdigest()
-        with SessionLocal() as db:
-            insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
-            stmt = (
-                insert(RateLimitBucket)
-                .values(key=key, window_start=window, count=1, expires_at=window + period)
-                .on_conflict_do_update(
-                    index_elements=["key", "window_start"], set_={"count": RateLimitBucket.count + 1}
-                )
-                .returning(RateLimitBucket.count)
-            )
-            count = db.execute(stmt).scalar_one()
-            if random.random() < 0.01:
-                self._purge(db, now)
-            db.commit()
-        return max(window + period - now, 1) if count > amount else None
+        insert = pg_insert if db.get_bind().dialect.name == "postgresql" else sqlite_insert
+        stmt = (
+            insert(RateLimitBucket)
+            .values(key=key, window_start=window, count=1, expires_at=window + period)
+            .on_conflict_do_update(index_elements=["key", "window_start"], set_={"count": RateLimitBucket.count + 1})
+            .returning(RateLimitBucket.count)
+        )
+        count = db.execute(stmt).scalar_one()
+        if random.random() < 0.01:
+            self._purge(db, now)
+        db.commit()
+        return Bucket(key, window), (max(window + period - now, 1) if count > amount else None)
 
-    def enforce(self, scope: str, subject: str, limit: str) -> None:
+    def hit(self, db: Session, scope: str, subject: str, limit: str) -> int | None:
+        """Count one request; returns seconds until the window resets if the limit is exceeded, else None."""
+        return self._charge(db, scope, subject, limit)[1]
+
+    def enforce(self, db: Session, scope: str, subject: str, limit: str) -> Bucket | None:
         if not get_settings().rate_limit_enabled:
-            return
-        retry_after = self.hit(scope, subject.strip().lower(), limit)
+            return None
+        bucket, retry_after = self._charge(db, scope, subject.strip().lower(), limit)
         if retry_after is not None:
             raise HTTPException(
                 status.HTTP_429_TOO_MANY_REQUESTS,
                 f"Too many requests. Please try again in {retry_after} seconds.",
                 headers={"Retry-After": str(retry_after)},
             )
+        return bucket
+
+    def refund(self, db: Session, bucket: Bucket | None) -> None:
+        """Give back an attempt that turned out to be legitimate (e.g. a correct password)."""
+        if bucket is None:
+            return
+        db.execute(
+            update(RateLimitBucket)
+            .where(
+                RateLimitBucket.key == bucket.key,
+                RateLimitBucket.window_start == bucket.window_start,
+                RateLimitBucket.count > 0,
+            )
+            .values(count=RateLimitBucket.count - 1)
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
 
     @staticmethod
     def _purge(db, now: int) -> None:

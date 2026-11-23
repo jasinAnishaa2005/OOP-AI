@@ -23,12 +23,12 @@ from app.services.email import EmailSender, get_email_sender
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-def _limit(request: Request, scope: str, identifier: str | None = None) -> None:
-    """A generous per-IP limit (campus NAT) plus a strict per-account limit against password guessing."""
+def _limit(db: Session, request: Request, scope: str, identifier: str | None = None) -> None:
+    """A generous per-IP limit (campus NAT) plus a strict per-identifier limit."""
     settings = get_settings()
-    limiter.enforce(f"auth:{scope}:ip", client_ip(request), settings.auth_ip_rate_limit)
+    limiter.enforce(db, f"auth:{scope}:ip", client_ip(request), settings.auth_ip_rate_limit)
     if identifier:
-        limiter.enforce(f"auth:{scope}:account", identifier, settings.auth_rate_limit)
+        limiter.enforce(db, f"auth:{scope}:account", identifier, settings.auth_rate_limit)
 
 
 def _tokens_response(tokens: auth_service.IssuedTokens) -> TokenResponse:
@@ -46,7 +46,7 @@ def _raise(exc: auth_service.AuthError) -> None:
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
 def register(request: Request, body: RegisterRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    _limit(request, "register", body.email)
+    _limit(db, request, "register", body.email)
     try:
         user = auth_service.register_user(db, body)
     except auth_service.AuthError as exc:
@@ -56,17 +56,29 @@ def register(request: Request, body: RegisterRequest, db: Session = Depends(get_
 
 @router.post("/login", response_model=TokenResponse)
 def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    _limit(request, "login", body.identifier)
+    settings = get_settings()
+    ip = client_ip(request)
+    limiter.enforce(db, "auth:login:ip", ip, settings.auth_ip_rate_limit)
+    account = auth_service.find_login_user(db, body.identifier)
+    subject = auth_service.login_subject(account, body.identifier)
+    # Failed guesses are capped per account from one network, and more loosely per account from everywhere,
+    # so a stranger cannot lock a student out by spending a single shared budget.
+    charged = [
+        limiter.enforce(db, "auth:login:account-ip", f"{subject}|{ip}", settings.auth_rate_limit),
+        limiter.enforce(db, "auth:login:account", subject, settings.auth_account_rate_limit),
+    ]
     try:
-        user = auth_service.authenticate(db, body.identifier, body.password)
+        user = auth_service.authenticate(db, body.identifier, body.password, account)
     except auth_service.AuthError as exc:
         _raise(exc)
+    for bucket in charged:  # a correct password is not a guess
+        limiter.refund(db, bucket)
     return _tokens_response(auth_service.issue_tokens(db, user, remember_me=body.remember_me))
 
 
 @router.post("/refresh", response_model=TokenResponse)
 def refresh(request: Request, body: RefreshRequest, db: Session = Depends(get_db)) -> TokenResponse:
-    _limit(request, "refresh")
+    _limit(db, request, "refresh")
     try:
         tokens = auth_service.rotate_refresh_token(db, body.refresh_token)
     except auth_service.AuthError as exc:
@@ -102,14 +114,14 @@ def forgot_password(
     db: Session = Depends(get_db),
     sender: EmailSender = Depends(get_email_sender),
 ) -> MessageResponse:
-    _limit(request, "forgot-password", body.email)
+    _limit(db, request, "forgot-password", body.email)
     auth_service.request_password_reset(db, body.email, sender)
     return MessageResponse(message="If an account exists for this email, a reset link has been sent.")
 
 
 @router.post("/reset-password", response_model=MessageResponse)
 def reset_password(request: Request, body: ResetPasswordRequest, db: Session = Depends(get_db)) -> MessageResponse:
-    _limit(request, "reset-password")
+    _limit(db, request, "reset-password")
     try:
         auth_service.reset_password(db, body.token, body.new_password)
     except auth_service.AuthError as exc:

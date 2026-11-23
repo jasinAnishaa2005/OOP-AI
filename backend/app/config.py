@@ -14,7 +14,10 @@ def parse_limit(limit: str) -> tuple[int, int]:
     match = _LIMIT.match(limit.lower())
     if not match:
         raise ValueError(f"Invalid rate limit: {limit!r}")
-    return int(match[1]), int(match[2] or 1) * _PERIODS[match[3]]
+    amount, multiplier = int(match[1]), int(match[2] or 1)
+    if amount < 1 or multiplier < 1:
+        raise ValueError(f"Rate limit {limit!r} needs at least 1 request per period and a period of at least 1")
+    return amount, multiplier * _PERIODS[match[3]]
 
 
 class Settings(BaseSettings):
@@ -36,8 +39,11 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:8081", "http://localhost:19006"]
 
     rate_limit_enabled: bool = True
-    # Per account identifier (email / student ID). Limits are stored in the database, so all workers share them.
+    # Limits are stored in the database, so all workers share them. Logins count only failed attempts, per account
+    # (email and student ID resolve to the same account): strictly per account and client IP, so an attacker
+    # elsewhere cannot lock a student out, plus a looser cap per account across all IPs against distributed guessing.
     auth_rate_limit: str = "10/minute"
+    auth_account_rate_limit: str = "100/hour"
     # Per client IP; generous because a whole campus can share one address behind NAT.
     auth_ip_rate_limit: str = "100/minute"
 
@@ -76,7 +82,7 @@ class Settings(BaseSettings):
             raise ValueError("JWT_SECRET_KEY must be set to at least 32 characters")
         return value
 
-    @field_validator("auth_rate_limit", "auth_ip_rate_limit", "exam_create_rate_limit")
+    @field_validator("auth_rate_limit", "auth_account_rate_limit", "auth_ip_rate_limit", "exam_create_rate_limit")
     @classmethod
     def _valid_rate_limit(cls, value: str) -> str:
         parse_limit(value)

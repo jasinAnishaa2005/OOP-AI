@@ -222,7 +222,9 @@ def test_recovery_worker_sweeps_on_startup(client, seeded, student, monkeypatch)
 
 def test_rate_limit_counters_are_shared_between_workers():
     worker_a, worker_b = RateLimiter(), RateLimiter()
-    results = [w.hit("t", "student-1", "3/minute") for w in (worker_a, worker_b, worker_a, worker_b)]
+    with SessionLocal() as db_a, SessionLocal() as db_b:
+        calls = ((worker_a, db_a), (worker_b, db_b), (worker_a, db_a), (worker_b, db_b))
+        results = [w.hit(db, "t", "student-1", "3/minute") for w, db in calls]
     assert results[:3] == [None, None, None] and results[3] is not None and 0 < results[3] <= 60
     with SessionLocal() as db:
         keys = db.scalars(select(RateLimitBucket.key)).all()
@@ -235,7 +237,8 @@ def test_concurrent_hits_are_counted_exactly():
 
     def hit() -> None:
         barrier.wait()
-        results.append(RateLimiter().hit("t", "burst", "4/minute"))
+        with SessionLocal() as db:
+            results.append(RateLimiter().hit(db, "t", "burst", "4/minute"))
 
     threads = [threading.Thread(target=hit) for _ in range(10)]
     for t in threads:
@@ -248,8 +251,8 @@ def test_concurrent_hits_are_counted_exactly():
 
 
 def test_expired_windows_are_purged():
-    limiter.hit("t", "old", "1/second")
     with SessionLocal() as db:
+        limiter.hit(db, "t", "old", "1/second")
         db.execute(update(RateLimitBucket).values(expires_at=0))
         db.commit()
     limiter.purge_expired()

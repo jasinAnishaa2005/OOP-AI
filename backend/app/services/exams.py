@@ -281,9 +281,13 @@ def list_exams(
 
 def retry_exam(db: Session, user: User, exam_id: uuid.UUID) -> Exam:
     exam = get_exam(db, user, exam_id)
+    # Lock order is user -> exam -> usage ledger everywhere (generation completion and failure take the exam row
+    # before the ledger), so a retry racing a finishing run waits instead of deadlocking on PostgreSQL.
+    _lock_user(db, user)
+    current = db.execute(select(Exam.status, Exam.updated_at).where(Exam.id == exam.id).with_for_update()).one()
     stale_before = utcnow() - generation_lease()
-    stuck = exam.status in ("pending", "generating") and as_utc(exam.updated_at) < stale_before
-    if exam.status != "failed" and not stuck:
+    stuck = current.status in ("pending", "generating") and as_utc(current.updated_at) < stale_before
+    if current.status != "failed" and not stuck:
         raise ExamError("Only failed exams can be regenerated", 409)
     # The abandoned run's request no longer counts; the retry gets its own ledger row below.
     db.execute(

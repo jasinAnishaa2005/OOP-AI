@@ -38,7 +38,7 @@ def create_exam(
     generator: ExamGenerator = Depends(get_exam_generator),
     idempotency_key: str | None = Header(default=None, min_length=1, max_length=100),
 ) -> s.ExamOut:
-    limiter.enforce("exam:create", str(user.id), get_settings().exam_create_rate_limit)
+    limiter.enforce(db, "exam:create", str(user.id), get_settings().exam_create_rate_limit)
     exam, created = _call(svc.create_exam, db, user, body, idempotency_key)
     if created:
         background.add_task(run_generation, exam.id, generator)
@@ -69,7 +69,7 @@ def retry(
     user: User = Depends(get_current_user),
     generator: ExamGenerator = Depends(get_exam_generator),
 ) -> s.ExamOut:
-    limiter.enforce("exam:retry", str(user.id), get_settings().exam_create_rate_limit)
+    limiter.enforce(db, "exam:retry", str(user.id), get_settings().exam_create_rate_limit)
     exam = _call(svc.retry_exam, db, user, exam_id)
     background.add_task(run_generation, exam.id, generator)
     return svc.exam_out(svc.get_exam(db, user, exam.id))
