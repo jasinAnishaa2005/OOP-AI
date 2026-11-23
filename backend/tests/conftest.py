@@ -1,13 +1,18 @@
 import os
+import time
 
 os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key-that-is-long-enough-for-hs256-signing")
+os.environ.setdefault("AI_PROVIDER", "fake")
+# Never let a test reach the real Gemini API, even when a key is present in the shell environment.
+os.environ["GEMINI_API_KEY"] = ""
+os.environ.setdefault("AI_RETRY_BACKOFF_SECONDS", "0")
+os.environ.setdefault("GENERATION_RECOVERY_ENABLED", "false")
 os.environ.setdefault("DATABASE_URL", os.environ.get("TEST_DATABASE_URL", "sqlite+pysqlite:///./test.db"))
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-from app.core.rate_limit import limiter  # noqa: E402
 from app.db import Base, engine  # noqa: E402
 from app.main import app  # noqa: E402
 from app.services.email import get_email_sender  # noqa: E402
@@ -25,9 +30,21 @@ class OutboxSender:
 def _reset_db():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
-    limiter.reset()
+    # Pooled PostgreSQL connections cache prepared statements for the dropped tables; start each test fresh.
+    engine.dispose()
     yield
     Base.metadata.drop_all(engine)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_rate_limit_window(monkeypatch):
+    """Keep every request of a test in one rate-limit window, so slow runs never straddle a window boundary."""
+    from types import SimpleNamespace
+
+    from app.core import rate_limit
+
+    now = time.time()
+    monkeypatch.setattr(rate_limit, "time", SimpleNamespace(time=lambda: now))
 
 
 @pytest.fixture

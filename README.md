@@ -35,7 +35,49 @@ Milestone 2 (backend only so far) adds the OOC topic library:
   and topics, reorder, set prerequisites (self and circular dependencies rejected), and re-seed.
 - The topic-selection screen is not built yet; it waits for the design reference.
 
-Exams, AI generation/evaluation, code execution and analytics are later milestones.
+Milestone 3 (backend only so far) adds AI exam generation:
+
+- Preset templates (`exam_templates`, seeded: Quick Quiz, Theory Test, Code Analysis Drill, Code Writing Lab,
+  Midterm, Final) and fully custom formats. Question types: `mcq`, `theory`, `code_analysis` (long Java code
+  analysis) and `code_writing`. Difficulty is easy, medium, hard or mixed (default mix 30/50/20, customizable).
+- Student API (signed in): `GET /api/exams/templates`, `POST /api/exams` (preset + optional overrides, or custom
+  `sections` + `duration_minutes`; topics use the same category/chapter/topic selection as
+  `/api/topics/selection`), `GET /api/exams`, `GET /api/exams/{id}`, `POST /api/exams/{id}/retry`,
+  `DELETE /api/exams/{id}`. Generation runs in the background; poll the exam until `status` is `ready` or `failed`.
+  Send an optional `Idempotency-Key` header (1–100 chars) on `POST /api/exams`: repeating it returns the same
+  exam instead of creating and paying for another one (double taps, network retries); reusing a key with a
+  different request body returns 409.
+- Reliability: every API process runs a recovery sweep (on start and every
+  `GENERATION_RECOVERY_INTERVAL_SECONDS`) that resumes exams a crash, restart or deploy left `pending` or
+  `generating` with an expired heartbeat. Claiming is atomic, so several workers never generate one exam twice; after
+  `GENERATION_MAX_RUNS` interrupted runs the exam is failed and the student can retry. The heartbeat lease is at
+  least `AI_TIMEOUT_SECONDS` x (primary + fallback Gemini models) + retry backoff + 60 s, so a slow but healthy
+  run is never taken over. Each Gemini call has a hard wall-clock limit of `AI_TIMEOUT_SECONDS` (and one request,
+  fallbacks included, at most that x the number of models); a reply arriving later is discarded and the attempt
+  counts as a retryable timeout.
+- Daily limit (`EXAM_DAILY_LIMIT`): creations and retries count while generating and once ready, including after
+  the exam is deleted; generations that end `failed` stop counting.
+- Rate limits are stored in the database (`rate_limit_buckets`), so all workers and servers share them, and are
+  counted on the request's own database connection. Auth has a generous per-IP limit (`AUTH_IP_RATE_LIMIT`) so a
+  campus network shared by many students is not locked out. Logins count only failed attempts, per account (email
+  and student ID are the same account): `AUTH_RATE_LIMIT` per account and client IP, so an attacker elsewhere
+  cannot lock a student out, and `AUTH_ACCOUNT_RATE_LIMIT` per account across all IPs against distributed
+  guessing. Requests rejected by a limit are not counted, so a correct password always frees its attempt again.
+  Exam creation and retry are limited per student. Limits need at least 1 request and a period of at
+  least 1 (e.g. `10/minute`, `5 per 2 hours`); anything else stops the server at startup.
+- Admin API: `GET/POST/PATCH /api/admin/exam-templates`, `GET /api/admin/exams`, `GET /api/admin/exams/{id}`
+  (includes answers, marking guides and the log of AI attempts).
+- The server plans every question slot (type, difficulty, marks, topic) from the selected topics only; the AI
+  fills the slots in a fixed JSON schema. Output is validated (slot/topic/count, rubric marks, 4 distinct MCQ
+  options, Java code, no duplicates); invalid output and transient provider errors are retried
+  (`AI_MAX_ATTEMPTS`), then the exam is marked `failed` with a safe message. Questions are stored only when the
+  whole exam is valid. Answers and marking guides live in `exam_question_keys` and never appear in student
+  responses.
+- `AI_PROVIDER=fake` (default outside production) uses a built-in offline generator; set `AI_PROVIDER=gemini`
+  and `GEMINI_API_KEY` in `backend/.env` for real generation.
+- The exam configuration and exam screens are not built yet; they wait for the design reference.
+
+AI evaluation, code execution and analytics are later milestones.
 
 ## Prerequisites
 
@@ -59,6 +101,10 @@ alembic upgrade head
 python -m app.seed          # load the OOC topic library
 uvicorn app.main:app --reload --port 8000
 ```
+
+Production: `uvicorn app.main:app --workers 4 --proxy-headers --forwarded-allow-ips=<reverse proxy IP>` against
+PostgreSQL (`--proxy-headers` makes the per-IP limit see the real client address; without it every request appears to
+come from the proxy). Run `alembic upgrade head` before starting the new version.
 
 API docs: http://localhost:8000/api/docs
 
@@ -99,6 +145,7 @@ npx expo-doctor
 
 ## Security notes
 
-- Secrets (JWT key, SMTP, future AI keys) live only in `backend/.env`; never in the mobile app.
+- Secrets (JWT key, SMTP, `GEMINI_API_KEY`) live only in `backend/.env`; never in the mobile app. The AI key is
+  never stored in the database, logged or sent to clients.
 - `EXPO_PUBLIC_*` variables are bundled into the app and must not contain secrets.
 - Refresh tokens are stored in Expo SecureStore on native (localStorage on web).

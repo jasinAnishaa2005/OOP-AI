@@ -19,3 +19,4 @@ htmlcov/
 
 # Local test database
 backend/test.db
+backend/test.db-journal

@@ -68,9 +68,18 @@ def register_user(db: Session, data: RegisterRequest) -> User:
     return user
 
 
-def authenticate(db: Session, identifier: str, password: str) -> User:
+def find_login_user(db: Session, identifier: str) -> User | None:
     identifier = identifier.strip()
-    user = db.scalars(select(User).where(or_(User.email == identifier.lower(), User.student_id == identifier))).first()
+    return db.scalars(select(User).where(or_(User.email == identifier.lower(), User.student_id == identifier))).first()
+
+
+def login_subject(user: User | None, identifier: str) -> str:
+    """One rate-limit identity per account, whichever of its identifiers (email or student ID) is typed."""
+    return f"user:{user.id}" if user else f"unknown:{identifier.strip().lower()}"
+
+
+def authenticate(db: Session, identifier: str, password: str, user: User | None = None) -> User:
+    user = user or find_login_user(db, identifier)
     if user is None:
         verify_password(password, _DUMMY_HASH)
         raise AuthError("Invalid credentials", status_code=401)
