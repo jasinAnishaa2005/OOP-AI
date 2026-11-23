@@ -108,3 +108,16 @@ def test_last_fallback_error_is_raised():
     with pytest.raises(GenerationError) as info:
         g.generate(REQUEST)
     assert models.calls == ["a", "b"] and info.value.retryable
+
+
+def test_transient_error_wins_over_later_missing_model():
+    models = ByModel(
+        {
+            "a": errors.APIError(503, {"error": {"message": "busy"}}),
+            "b": errors.APIError(404, {"error": {"message": "gone"}}),
+        }
+    )
+    g = GeminiGenerator("unused", "a", 30, client=SimpleNamespace(models=models), fallback_models=("b",))
+    with pytest.raises(GenerationError) as info:
+        g.generate(REQUEST)
+    assert models.calls == ["a", "b"] and info.value.retryable

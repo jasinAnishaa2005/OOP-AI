@@ -33,13 +33,18 @@ class GeminiGenerator:
             response_json_schema=request.response_schema,
             temperature=0.7,
         )
-        for model in self.models[:-1]:
+        retryable: GenerationError | None = None
+        for model in self.models:
             try:
                 return self._call(model, request, config)
             except GenerationError as exc:
                 if not isinstance(exc.__cause__, errors.APIError) or exc.__cause__.code not in _TRY_NEXT_MODEL:
                     raise
-        return self._call(self.models[-1], request, config)
+                if exc.retryable:
+                    retryable = exc
+                last = exc
+        # A transient failure on any model (e.g. 503) wins over a later permanent one (e.g. a retired model's 404).
+        raise retryable or last
 
     def _call(self, model: str, request: GenerationRequest, config: types.GenerateContentConfig) -> GenerationResponse:
         try:
