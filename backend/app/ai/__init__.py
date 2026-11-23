@@ -25,6 +25,7 @@ def get_exam_generator() -> ExamGenerator:
             api_key=settings.gemini_api_key.get_secret_value(),
             model=settings.gemini_model,
             timeout_seconds=settings.ai_timeout_seconds,
+            fallback_models=settings.gemini_fallback_model_list,
         )
     from app.ai.fake import FakeGenerator
 

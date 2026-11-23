@@ -70,3 +70,41 @@ def test_production_rejects_fake_provider(monkeypatch):
 
     with pytest.raises(ValueError, match="AI_PROVIDER"):
         Settings(environment="production", ai_provider="fake", jwt_secret_key="x" * 40)
+
+
+class ByModel:
+    def __init__(self, outcomes):
+        self.outcomes = outcomes
+        self.calls = []
+
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs["model"])
+        outcome = self.outcomes[kwargs["model"]]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def test_falls_back_when_primary_model_is_overloaded():
+    ok = SimpleNamespace(text='{"questions": []}', usage_metadata=None)
+    models = ByModel({"a": errors.APIError(503, {"error": {"message": "busy"}}), "b": ok})
+    g = GeminiGenerator("unused", "a", 30, client=SimpleNamespace(models=models), fallback_models=("b",))
+    res = g.generate(REQUEST)
+    assert models.calls == ["a", "b"] and res.model == "b"
+
+
+def test_no_fallback_on_request_errors():
+    models = ByModel({"a": errors.APIError(400, {"error": {"message": "bad"}}), "b": None})
+    g = GeminiGenerator("unused", "a", 30, client=SimpleNamespace(models=models), fallback_models=("b",))
+    with pytest.raises(GenerationError):
+        g.generate(REQUEST)
+    assert models.calls == ["a"]
+
+
+def test_last_fallback_error_is_raised():
+    busy = errors.APIError(503, {"error": {"message": "busy"}})
+    models = ByModel({"a": busy, "b": busy})
+    g = GeminiGenerator("unused", "a", 30, client=SimpleNamespace(models=models), fallback_models=("b", "a"))
+    with pytest.raises(GenerationError) as info:
+        g.generate(REQUEST)
+    assert models.calls == ["a", "b"] and info.value.retryable

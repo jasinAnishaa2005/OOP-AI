@@ -5,13 +5,23 @@ from google.genai import errors, types
 from app.ai.base import GenerationError, GenerationRequest, GenerationResponse
 
 _RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
+# Errors that are specific to one model (overloaded, quota, retired), so the next fallback model may still work.
+_TRY_NEXT_MODEL = {404, 429, 500, 503, 504}
 
 
 class GeminiGenerator:
     provider = "gemini"
 
-    def __init__(self, api_key: str, model: str, timeout_seconds: int, client: genai.Client | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        timeout_seconds: int,
+        client: genai.Client | None = None,
+        fallback_models: tuple[str, ...] = (),
+    ) -> None:
         self.model = model
+        self.models = list(dict.fromkeys([model, *fallback_models]))
         self._client = client or genai.Client(
             api_key=api_key, http_options=types.HttpOptions(timeout=timeout_seconds * 1000)
         )
@@ -23,8 +33,17 @@ class GeminiGenerator:
             response_json_schema=request.response_schema,
             temperature=0.7,
         )
+        for model in self.models[:-1]:
+            try:
+                return self._call(model, request, config)
+            except GenerationError as exc:
+                if not isinstance(exc.__cause__, errors.APIError) or exc.__cause__.code not in _TRY_NEXT_MODEL:
+                    raise
+        return self._call(self.models[-1], request, config)
+
+    def _call(self, model: str, request: GenerationRequest, config: types.GenerateContentConfig) -> GenerationResponse:
         try:
-            response = self._client.models.generate_content(model=self.model, contents=request.prompt, config=config)
+            response = self._client.models.generate_content(model=model, contents=request.prompt, config=config)
         except errors.APIError as exc:
             kind = "rate_limited" if exc.code == 429 else "provider_error"
             raise GenerationError(
@@ -43,4 +62,5 @@ class GeminiGenerator:
             text=text,
             input_tokens=getattr(usage, "prompt_token_count", None),
             output_tokens=getattr(usage, "candidates_token_count", None),
+            model=model,
         )

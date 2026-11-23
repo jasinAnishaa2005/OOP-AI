@@ -327,6 +327,7 @@ def _generate_batch(
     slots: list[PlannedSlot],
     seen_stems: set[str],
     sleep: Callable[[float], None],
+    models_used: set[str],
 ) -> list[Draft]:
     settings = get_settings()
     question_type = slots[0].question_type
@@ -352,6 +353,7 @@ def _generate_batch(
             feedback, reason = exc.errors, _INVALID
             continue
         _record(db, exam, run_id, question_type, n, "success", started, resp=resp)
+        models_used.add(resp.model or generator.model)
         return drafts
     raise GenerationFailed(reason)
 
@@ -412,17 +414,25 @@ def run_generation(exam_id: uuid.UUID, generator: ExamGenerator, sleep: Callable
             slots = plan_slots(exam, [link.topic for link in exam.topic_links])
             drafts: list[Draft] = []
             seen: set[str] = set()
+            models_used: set[str] = set()
             for sec in exam.sections:
                 typed = [s for s in slots if s.question_type == sec["question_type"]]
                 size = BATCH_SIZE[sec["question_type"]]
                 for i in range(0, len(typed), size):
-                    drafts += _generate_batch(db, exam, run_id, generator, typed[i : i + size], seen, sleep)
+                    drafts += _generate_batch(
+                        db, exam, run_id, generator, typed[i : i + size], seen, sleep, models_used
+                    )
 
             # Questions and the ready status commit together, and only if this run still owns the exam.
             finished = db.execute(
                 update(Exam)
                 .where(Exam.id == exam_id, Exam.generation_id == run_id, Exam.status == "generating")
-                .values(status="ready", generated_at=utcnow(), updated_at=utcnow())
+                .values(
+                    status="ready",
+                    model=",".join(sorted(models_used))[:80] or generator.model,
+                    generated_at=utcnow(),
+                    updated_at=utcnow(),
+                )
                 .execution_options(synchronize_session=False)
             ).rowcount
             if not finished:

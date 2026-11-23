@@ -37,10 +37,12 @@ class Settings(BaseSettings):
     # AI exam generation. Keys stay on the server; the mobile app never sees them.
     ai_provider: Literal["fake", "gemini"] = "fake"
     gemini_api_key: SecretStr | None = None
-    gemini_model: str = "gemini-2.5-flash"
-    ai_timeout_seconds: int = 120
+    gemini_model: str = "gemini-3.5-flash"
+    # Comma-separated models tried in order when the primary one is overloaded, rate-limited or unavailable.
+    gemini_fallback_models: str = "gemini-3-flash-preview,gemini-flash-lite-latest"
+    ai_timeout_seconds: int = 300
     ai_max_attempts: int = Field(default=3, ge=1, le=5)
-    ai_retry_backoff_seconds: float = 2.0
+    ai_retry_backoff_seconds: float = 10.0
     exam_create_rate_limit: str = "10/minute"
     exam_daily_limit: int = 30
 
@@ -56,6 +58,10 @@ class Settings(BaseSettings):
         if self.environment == "production" and self.ai_provider == "fake":
             raise ValueError("AI_PROVIDER must be a real provider (e.g. gemini) in production")
         return self
+
+    @property
+    def gemini_fallback_model_list(self) -> tuple[str, ...]:
+        return tuple(m.strip() for m in self.gemini_fallback_models.split(",") if m.strip())
 
     @property
     def smtp_configured(self) -> bool:
