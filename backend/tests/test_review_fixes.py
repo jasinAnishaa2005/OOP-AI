@@ -5,18 +5,22 @@ import threading
 import time
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from google.genai import errors
 from pydantic import ValidationError
-from sqlalchemy import event, select, update
+from sqlalchemy import event, func, select, update
 
+from app.ai.base import GenerationError, GenerationRequest
 from app.api.routes import auth as auth_routes
 from app.config import Settings, get_settings, parse_limit
 from app.core.time import utcnow
 from app.db import SessionLocal, engine
 from app.main import app
-from app.models import Exam
+from app.models import Exam, ExamGenerationAttempt, ExamQuestion
 from app.services import exam_generation
 from app.services import exams as exams_service
 from app.services.exam_generation import generation_lease, recover_stuck_exams, run_generation
@@ -24,6 +28,9 @@ from tests.test_exams import ScriptedGenerator, provider, seeded, student  # noq
 from tests.test_reliability import _ledger, _new_exam, _simulate_crash, body
 
 PASSWORD = "objects4ever"
+REQUEST = GenerationRequest(
+    question_type="mcq", system_instruction="sys", prompt="p", response_schema={"type": "object"}
+)
 
 
 @pytest.fixture
@@ -298,3 +305,176 @@ def test_tests_never_reach_the_real_gemini_api(client, seeded, student, gemini_s
     assert not gemini_settings.gemini_api_key.get_secret_value()
     res = client.post("/api/exams", json=body(), headers=student)
     assert res.status_code == 503
+
+
+# ---------- Second review: rejected sign-ins must not fill the login budget ----------
+
+
+def test_rejected_requests_are_not_counted_so_a_refund_frees_a_slot():
+    """The limit was full when a legitimate request and a rejected one arrived together; the refund must free a slot."""
+    from app.core.rate_limit import RateLimiter
+
+    worker = RateLimiter()
+    with SessionLocal() as db:
+        charged = [worker.enforce(db, "t", "acct", "3/minute") for _ in range(3)]
+        with pytest.raises(HTTPException) as info:
+            worker.enforce(db, "t", "acct", "3/minute")
+        assert info.value.status_code == 429
+        worker.refund(db, charged[-1])  # the third request turned out to be a correct password
+        assert worker.enforce(db, "t", "acct", "3/minute") is not None
+
+
+def test_correct_password_is_not_blocked_by_a_guess_rejected_meanwhile(client, registered, ip_from_header, monkeypatch):
+    for _ in range(9):
+        assert login(client, "ada@example.com", "wrong-pass1") == 401
+    real_authenticate = auth_routes.auth_service.authenticate
+    injected = []
+
+    def guess_arrives_meanwhile(db, identifier, password, user=None):
+        if password == PASSWORD and not injected:
+            injected.append(login(client, "ada@example.com", "wrong-pass1"))  # budget full: rejected
+        return real_authenticate(db, identifier, password, user)
+
+    monkeypatch.setattr(auth_routes.auth_service, "authenticate", guess_arrives_meanwhile)
+    assert login(client, "ada@example.com", PASSWORD) == 200
+    assert injected == [429]
+    assert login(client, "ada@example.com", PASSWORD) == 200
+
+
+def test_failed_logins_still_block_even_a_correct_password(client, registered, ip_from_header):
+    assert [login(client, "ada@example.com", "wrong-pass1") for _ in range(10)] == [401] * 10
+    assert login(client, "ada@example.com", "wrong-pass1") == 429
+    assert login(client, "ada@example.com", PASSWORD) == 429  # brute-force protection is unchanged
+
+
+def test_account_cap_rejection_does_not_spend_the_network_budget(client, registered, ip_from_header, monkeypatch):
+    settings = get_settings()
+    monkeypatch.setattr(settings, "auth_account_rate_limit", "3/hour")
+    assert [login(client, "ada@example.com", "wrong-pass1") for _ in range(4)] == [401] * 3 + [429]
+    monkeypatch.setattr(settings, "auth_account_rate_limit", "100/hour")
+    # Only the 3 checked passwords count against this network's 10, not the one rejected by the account cap.
+    assert [login(client, "ada@example.com", "wrong-pass1") for _ in range(8)] == [401] * 7 + [429]
+
+
+# ---------- Second review: hard wall-clock limit on Gemini requests ----------
+
+
+class SlowModels:
+    """An offline stand-in for the Gemini client whose replies arrive after `delay` seconds (or raise)."""
+
+    def __init__(self, delay: float, outcome=None):
+        self.delay, self.outcome = delay, outcome
+        self.started = 0
+        self.finished = threading.Event()
+
+    def generate_content(self, **kwargs):
+        self.started += 1
+        time.sleep(self.delay)
+        self.finished.set()
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome or SimpleNamespace(text='{"questions": []}', usage_metadata=None)
+
+
+def slow_gemini(delay: float, timeout: float = 0.2, outcome=None):
+    from app.ai.gemini import GeminiGenerator
+
+    models = SlowModels(delay, outcome)
+    return GeminiGenerator("unused", "gemini-test", timeout, client=SimpleNamespace(models=models)), models
+
+
+def test_slow_gemini_reply_times_out_and_the_exam_is_retryable(client, seeded, student, provider):
+    generator, models = slow_gemini(delay=1.0)
+    provider(generator)
+    started = time.monotonic()
+    exam_id = _new_exam(client, student)
+    exam = client.get(f"/api/exams/{exam_id}", headers=student).json()
+    assert time.monotonic() - started < 5
+    assert exam["status"] == "failed" and "unavailable" in exam["failure_reason"]
+    assert models.started == get_settings().ai_max_attempts  # retry limit unchanged
+    with SessionLocal() as db:
+        outcomes = db.scalars(
+            select(ExamGenerationAttempt.outcome).where(ExamGenerationAttempt.exam_id == uuid.UUID(exam_id))
+        ).all()
+    assert outcomes == ["timeout"] * get_settings().ai_max_attempts
+    assert _ledger(exam_id) == ["failed"]  # a timed-out exam does not use up the daily limit
+
+    # The late replies arrive after the deadline and are discarded: nothing is stored, nothing is regenerated.
+    models.finished.wait(5)
+    time.sleep(1.2)
+    with SessionLocal() as db:
+        assert db.scalar(select(func.count()).select_from(ExamQuestion)) == 0
+    from app.ai.fake import FakeGenerator
+
+    provider(FakeGenerator())
+    assert client.post(f"/api/exams/{exam_id}/retry", headers=student).status_code == 202
+    exam = client.get(f"/api/exams/{exam_id}", headers=student).json()
+    with SessionLocal() as db:
+        stored = db.scalar(select(func.count()).select_from(ExamQuestion))
+    assert exam["status"] == "ready" and stored == len(exam["questions"])
+
+
+def test_late_reply_is_never_returned():
+    generator, models = slow_gemini(delay=0.5)
+    with pytest.raises(GenerationError) as info:
+        generator.generate(REQUEST)
+    assert info.value.kind == "timeout" and info.value.retryable
+    assert models.finished.wait(2)  # the reply did come, after the caller had already moved on
+
+
+def test_fallback_after_a_slow_overloaded_primary_stays_within_the_overall_limit():
+    from app.ai.gemini import GeminiGenerator
+
+    busy = errors.APIError(503, {"error": {"message": "busy"}})
+
+    class Models:
+        calls: list[str] = []
+
+        def generate_content(self, **kwargs):
+            self.calls.append(kwargs["model"])
+            time.sleep(0.15 if kwargs["model"] == "a" else 1.0)
+            if kwargs["model"] == "a":
+                raise busy
+            return SimpleNamespace(text="{}", usage_metadata=None)
+
+    models = Models()
+    generator = GeminiGenerator("unused", "a", 0.2, client=SimpleNamespace(models=models), fallback_models=("b",))
+    started = time.monotonic()
+    with pytest.raises(GenerationError) as info:
+        generator.generate(REQUEST)
+    assert models.calls == ["a", "b"] and info.value.kind == "timeout"
+    assert time.monotonic() - started < 0.2 * 2 + 0.15
+
+
+def test_fallback_still_succeeds_within_the_limit():
+    from app.ai.gemini import GeminiGenerator
+
+    class Models:
+        def generate_content(self, **kwargs):
+            time.sleep(0.05)
+            if kwargs["model"] == "a":
+                raise errors.APIError(503, {"error": {"message": "busy"}})
+            return SimpleNamespace(text='{"questions": []}', usage_metadata=None)
+
+    generator = GeminiGenerator("unused", "a", 0.5, client=SimpleNamespace(models=Models()), fallback_models=("b",))
+    assert generator.generate(REQUEST).model == "b"
+
+
+def test_lease_outlasts_the_longest_possible_gemini_request(gemini_settings):
+    from app.ai.gemini import GeminiGenerator
+
+    generator = GeminiGenerator(
+        "unused",
+        gemini_settings.gemini_model,
+        gemini_settings.ai_timeout_seconds,
+        client=SimpleNamespace(models=None),
+        fallback_models=gemini_settings.gemini_fallback_model_list,
+    )
+    longest_request = generator.timeout_seconds * len(generator.models)
+    longest_gap = longest_request + gemini_settings.ai_retry_backoff_seconds * gemini_settings.ai_max_attempts
+    assert generation_lease() > timedelta(seconds=longest_gap)
+
+
+def test_zero_ai_timeout_is_rejected_at_startup():
+    with pytest.raises(ValidationError):
+        Settings(ai_timeout_seconds=0)

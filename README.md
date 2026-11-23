@@ -52,7 +52,9 @@ Milestone 3 (backend only so far) adds AI exam generation:
   `generating` with an expired heartbeat. Claiming is atomic, so several workers never generate one exam twice; after
   `GENERATION_MAX_RUNS` interrupted runs the exam is failed and the student can retry. The heartbeat lease is at
   least `AI_TIMEOUT_SECONDS` x (primary + fallback Gemini models) + retry backoff + 60 s, so a slow but healthy
-  run is never taken over.
+  run is never taken over. Each Gemini call has a hard wall-clock limit of `AI_TIMEOUT_SECONDS` (and one request,
+  fallbacks included, at most that x the number of models); a reply arriving later is discarded and the attempt
+  counts as a retryable timeout.
 - Daily limit (`EXAM_DAILY_LIMIT`): creations and retries count while generating and once ready, including after
   the exam is deleted; generations that end `failed` stop counting.
 - Rate limits are stored in the database (`rate_limit_buckets`), so all workers and servers share them, and are
@@ -60,7 +62,8 @@ Milestone 3 (backend only so far) adds AI exam generation:
   campus network shared by many students is not locked out. Logins count only failed attempts, per account (email
   and student ID are the same account): `AUTH_RATE_LIMIT` per account and client IP, so an attacker elsewhere
   cannot lock a student out, and `AUTH_ACCOUNT_RATE_LIMIT` per account across all IPs against distributed
-  guessing. Exam creation and retry are limited per student. Limits need at least 1 request and a period of at
+  guessing. Requests rejected by a limit are not counted, so a correct password always frees its attempt again.
+  Exam creation and retry are limited per student. Limits need at least 1 request and a period of at
   least 1 (e.g. `10/minute`, `5 per 2 hours`); anything else stops the server at startup.
 - Admin API: `GET/POST/PATCH /api/admin/exam-templates`, `GET /api/admin/exams`, `GET /api/admin/exams/{id}`
   (includes answers, marking guides and the log of AI attempts).

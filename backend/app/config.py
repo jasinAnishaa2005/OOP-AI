@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.5-flash"
     # Comma-separated models tried in order when the primary one is overloaded, rate-limited or unavailable.
     gemini_fallback_models: str = "gemini-3-flash-preview,gemini-flash-lite-latest"
-    ai_timeout_seconds: int = 300
+    ai_timeout_seconds: int = Field(default=300, ge=1)
     ai_max_attempts: int = Field(default=3, ge=1, le=5)
     ai_retry_backoff_seconds: float = 10.0
     exam_create_rate_limit: str = "10/minute"  # per student, shared by all workers

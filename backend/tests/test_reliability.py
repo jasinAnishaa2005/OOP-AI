@@ -247,7 +247,7 @@ def test_concurrent_hits_are_counted_exactly():
         t.join()
     assert results.count(None) == 4
     with SessionLocal() as db:
-        assert db.scalar(select(RateLimitBucket.count)) == 10
+        assert db.scalar(select(RateLimitBucket.count)) == 4  # rejected requests are not counted
 
 
 def test_expired_windows_are_purged():

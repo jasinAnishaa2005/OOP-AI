@@ -43,17 +43,23 @@ class RateLimiter:
         stmt = (
             insert(RateLimitBucket)
             .values(key=key, window_start=window, count=1, expires_at=window + period)
-            .on_conflict_do_update(index_elements=["key", "window_start"], set_={"count": RateLimitBucket.count + 1})
+            # A full bucket is left as is: rejected requests never ran, so they must not count as attempts. Otherwise
+            # a refund after a correct password could still leave the bucket full and block the next sign-in.
+            .on_conflict_do_update(
+                index_elements=["key", "window_start"],
+                set_={"count": RateLimitBucket.count + 1},
+                where=RateLimitBucket.count < amount,
+            )
             .returning(RateLimitBucket.count)
         )
-        count = db.execute(stmt).scalar_one()
+        allowed = db.execute(stmt).scalar_one_or_none() is not None
         if random.random() < 0.01:
             self._purge(db, now)
         db.commit()
-        return Bucket(key, window), (max(window + period - now, 1) if count > amount else None)
+        return Bucket(key, window), (None if allowed else max(window + period - now, 1))
 
     def hit(self, db: Session, scope: str, subject: str, limit: str) -> int | None:
-        """Count one request; returns seconds until the window resets if the limit is exceeded, else None."""
+        """Count one request; if the limit is already reached, count nothing and return seconds until reset."""
         return self._charge(db, scope, subject, limit)[1]
 
     def enforce(self, db: Session, scope: str, subject: str, limit: str) -> Bucket | None:

@@ -1,3 +1,6 @@
+import threading
+import time
+
 import httpx
 from google import genai
 from google.genai import errors, types
@@ -22,8 +25,9 @@ class GeminiGenerator:
     ) -> None:
         self.model = model
         self.models = list(dict.fromkeys([model, *fallback_models]))
+        self.timeout_seconds = timeout_seconds
         self._client = client or genai.Client(
-            api_key=api_key, http_options=types.HttpOptions(timeout=timeout_seconds * 1000)
+            api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout_seconds * 1000))
         )
 
     def generate(self, request: GenerationRequest) -> GenerationResponse:
@@ -34,9 +38,11 @@ class GeminiGenerator:
             temperature=0.7,
         )
         retryable: GenerationError | None = None
+        # One request, fallbacks included, never outlasts timeout x models: the generation lease is sized on that.
+        deadline = time.monotonic() + self.timeout_seconds * len(self.models)
         for model in self.models:
             try:
-                return self._call(model, request, config)
+                return self._call_with_deadline(model, request, config, deadline)
             except GenerationError as exc:
                 if not isinstance(exc.__cause__, errors.APIError) or exc.__cause__.code not in _TRY_NEXT_MODEL:
                     raise
@@ -45,6 +51,33 @@ class GeminiGenerator:
                 last = exc
         # A transient failure on any model (e.g. 503) wins over a later permanent one (e.g. a retired model's 404).
         raise retryable or last
+
+    def _call_with_deadline(
+        self, model: str, request: GenerationRequest, config: types.GenerateContentConfig, deadline: float
+    ) -> GenerationResponse:
+        """The HTTP timeout only bounds each wait for data, so a slowly trickling reply needs a hard wall-clock limit.
+
+        The call runs in a daemon thread; if it misses the deadline its late reply is discarded, never returned."""
+        limit = min(self.timeout_seconds, deadline - time.monotonic())
+        if limit <= 0:
+            raise GenerationError("Gemini request exceeded its time limit", retryable=True, kind="timeout")
+        done = threading.Event()
+        outcome: dict = {}
+
+        def run() -> None:
+            try:
+                outcome["response"] = self._call(model, request, config)
+            except BaseException as exc:  # handed to the caller below
+                outcome["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=run, name=f"gemini-{model}", daemon=True).start()
+        if not done.wait(limit):
+            raise GenerationError("Gemini request exceeded its time limit", retryable=True, kind="timeout")
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["response"]
 
     def _call(self, model: str, request: GenerationRequest, config: types.GenerateContentConfig) -> GenerationResponse:
         try:

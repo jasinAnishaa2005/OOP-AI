@@ -63,10 +63,12 @@ def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)) -
     subject = auth_service.login_subject(account, body.identifier)
     # Failed guesses are capped per account from one network, and more loosely per account from everywhere,
     # so a stranger cannot lock a student out by spending a single shared budget.
-    charged = [
-        limiter.enforce(db, "auth:login:account-ip", f"{subject}|{ip}", settings.auth_rate_limit),
-        limiter.enforce(db, "auth:login:account", subject, settings.auth_account_rate_limit),
-    ]
+    charged = [limiter.enforce(db, "auth:login:account-ip", f"{subject}|{ip}", settings.auth_rate_limit)]
+    try:
+        charged.append(limiter.enforce(db, "auth:login:account", subject, settings.auth_account_rate_limit))
+    except HTTPException:
+        limiter.refund(db, charged[0])  # rejected before the password was checked, so it was not a guess
+        raise
     try:
         user = auth_service.authenticate(db, body.identifier, body.password, account)
     except auth_service.AuthError as exc:
