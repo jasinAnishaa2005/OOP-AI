@@ -659,3 +659,15 @@ def test_idempotency_key_is_per_user_and_optional(client, seeded, student, other
     assert len(no_key) == 2
     res = client.post("/api/exams", json=body, headers=student | {"Idempotency-Key": "x" * 101})
     assert res.status_code == 422
+
+
+def test_cors_preflight_allows_idempotency_key(client):
+    res = client.options(
+        "/api/exams",
+        headers={
+            "Origin": "http://localhost:8081",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "authorization,content-type,idempotency-key",
+        },
+    )
+    assert res.status_code == 200 and "idempotency-key" in res.headers["access-control-allow-headers"].lower()
