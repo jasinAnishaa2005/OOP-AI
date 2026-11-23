@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
 from app.ai import ExamGenerator, get_exam_generator
@@ -37,9 +37,11 @@ def create_exam(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
     generator: ExamGenerator = Depends(get_exam_generator),
+    idempotency_key: str | None = Header(default=None, min_length=1, max_length=100),
 ) -> s.ExamOut:
-    exam = _call(svc.create_exam, db, user, body)
-    background.add_task(run_generation, exam.id, generator)
+    exam, created = _call(svc.create_exam, db, user, body, idempotency_key)
+    if created:
+        background.add_task(run_generation, exam.id, generator)
     return svc.exam_out(svc.get_exam(db, user, exam.id))
 
 

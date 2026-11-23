@@ -30,6 +30,8 @@ class ExamTemplate(_Timestamps, Base):
 
 class Exam(_Timestamps, Base):
     __tablename__ = "exams"
+    # A client-supplied Idempotency-Key makes a repeated create (double tap, network retry) return the same exam.
+    __table_args__ = (UniqueConstraint("user_id", "idempotency_key", name="uq_exams_user_idempotency_key"),)
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
@@ -47,6 +49,7 @@ class Exam(_Timestamps, Base):
     model: Mapped[str | None] = mapped_column(String(80))
     prompt_version: Mapped[str | None] = mapped_column(String(20))
     generation_id: Mapped[uuid.UUID | None] = mapped_column()
+    idempotency_key: Mapped[str | None] = mapped_column(String(100))
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     template: Mapped[ExamTemplate | None] = relationship()

@@ -138,7 +138,18 @@ def _check_daily_quota(db: Session, user: User) -> None:
         raise ExamError(f"Daily limit of {limit} exam generations reached", 429)
 
 
-def create_exam(db: Session, user: User, data: s.ExamCreate) -> Exam:
+def _existing_exam(db: Session, user: User, idempotency_key: str) -> Exam | None:
+    return db.scalars(select(Exam).where(Exam.user_id == user.id, Exam.idempotency_key == idempotency_key)).first()
+
+
+def create_exam(db: Session, user: User, data: s.ExamCreate, idempotency_key: str | None = None) -> tuple[Exam, bool]:
+    """Returns (exam, created). A repeated idempotency key returns the original exam without generating again."""
+    if idempotency_key is not None:
+        # Same user-row lock as the quota check, so concurrent duplicates wait for the first one to commit.
+        db.execute(select(User.id).where(User.id == user.id).with_for_update())
+        existing = _existing_exam(db, user, idempotency_key)
+        if existing is not None:
+            return existing, False
     _check_daily_quota(db, user)
 
     template = None
@@ -178,13 +189,21 @@ def create_exam(db: Session, user: User, data: s.ExamCreate) -> Exam:
         total_marks=spec.total_marks,
         sections=[sec.model_dump() for sec in spec.sections],
         status="pending",
+        idempotency_key=idempotency_key,
         topic_links=[ExamTopic(topic_id=tid, position=i) for i, tid in enumerate(selection.topic_ids)],
     )
-    db.add(exam)
-    db.flush()
-    db.add(ExamGenerationRequest(user_id=user.id, exam_id=exam.id))
-    db.commit()
-    return exam
+    try:
+        db.add(exam)
+        db.flush()
+        db.add(ExamGenerationRequest(user_id=user.id, exam_id=exam.id))
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = _existing_exam(db, user, idempotency_key) if idempotency_key is not None else None
+        if existing is None:
+            raise
+        return existing, False
+    return exam, True
 
 
 def _load(db: Session, exam_id: uuid.UUID, with_keys: bool = False) -> Exam | None:

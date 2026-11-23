@@ -2,7 +2,7 @@ import json
 import uuid
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.ai import get_exam_generator
 from app.ai.base import GenerationError, GenerationRequest, GenerationResponse
@@ -613,3 +613,49 @@ def test_retry_rate_limit_is_shared_across_exam_ids(client, seeded, student, mon
     monkeypatch.setattr(get_settings(), "exam_create_rate_limit", "3/minute")
     statuses = [client.post(f"/api/exams/{uuid.uuid4()}/retry", headers=student).status_code for _ in range(5)]
     assert statuses == [404, 404, 404, 429, 429]
+
+
+# ---------- Idempotent creation ----------
+
+
+def _exam_rows(exam_id: str) -> tuple[int, int]:
+    from app.models import ExamGenerationRequest
+
+    with SessionLocal() as db:
+        uid = db.scalars(select(Exam.user_id).where(Exam.id == uuid.UUID(exam_id))).one()
+        exams = db.scalar(select(func.count()).select_from(Exam).where(Exam.user_id == uid))
+        ledger = db.scalar(
+            select(func.count()).select_from(ExamGenerationRequest).where(ExamGenerationRequest.user_id == uid)
+        )
+    return exams, ledger
+
+
+def test_repeated_idempotency_key_returns_same_exam(client, seeded, student, provider):
+    class Counting(FakeGenerator):
+        calls = 0
+
+        def generate(self, request):
+            Counting.calls += 1
+            return super().generate(request)
+
+    provider(Counting())
+    body = custom({"topic_ids": topic_ids("Encapsulation")}, [sec("mcq", 3, 1)])
+    key = {"Idempotency-Key": "tap-123"}
+    first = client.post("/api/exams", json=body, headers=student | key)
+    second = client.post("/api/exams", json=body, headers=student | key)
+    assert first.status_code == second.status_code == 202
+    assert first.json()["id"] == second.json()["id"] and second.json()["status"] == "ready"
+    assert Counting.calls == 1
+    assert _exam_rows(first.json()["id"]) == (1, 1)
+
+
+def test_idempotency_key_is_per_user_and_optional(client, seeded, student, other):
+    body = custom({"topic_ids": topic_ids("Encapsulation")}, [sec("mcq", 3, 1)])
+    key = {"Idempotency-Key": "same"}
+    mine = client.post("/api/exams", json=body, headers=student | key).json()["id"]
+    theirs = client.post("/api/exams", json=body, headers=other | key).json()["id"]
+    assert mine != theirs
+    no_key = {client.post("/api/exams", json=body, headers=student).json()["id"] for _ in range(2)}
+    assert len(no_key) == 2
+    res = client.post("/api/exams", json=body, headers=student | {"Idempotency-Key": "x" * 101})
+    assert res.status_code == 422

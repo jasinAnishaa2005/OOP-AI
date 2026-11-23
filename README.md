@@ -44,6 +44,8 @@ Milestone 3 (backend only so far) adds AI exam generation:
   `sections` + `duration_minutes`; topics use the same category/chapter/topic selection as
   `/api/topics/selection`), `GET /api/exams`, `GET /api/exams/{id}`, `POST /api/exams/{id}/retry`,
   `DELETE /api/exams/{id}`. Generation runs in the background; poll the exam until `status` is `ready` or `failed`.
+  Send an optional `Idempotency-Key` header (1–100 chars) on `POST /api/exams`: repeating it returns the same
+  exam instead of creating and paying for another one (double taps, network retries).
 - Admin API: `GET/POST/PATCH /api/admin/exam-templates`, `GET /api/admin/exams`, `GET /api/admin/exams/{id}`
   (includes answers, marking guides and the log of AI attempts).
 - The server plans every question slot (type, difficulty, marks, topic) from the selected topics only; the AI
